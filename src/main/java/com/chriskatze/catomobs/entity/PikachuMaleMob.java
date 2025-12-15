@@ -22,8 +22,9 @@ import software.bernie.geckolib.animation.AnimationState;
 import software.bernie.geckolib.animation.PlayState;
 import software.bernie.geckolib.animation.RawAnimation;
 
+import java.util.Set;
+
 /**
- * PikachuMaleMob
  *
  * Purpose:
  * A concrete mob implementation using your shared base class (CatoBaseMob)
@@ -82,36 +83,51 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
             60,
             30,
             1.0D,
-            1.50D,
-            0.5F,
-            2.0D,
-            48.0D,
+            1.35D,
+            0.25F,
+            3.0D,
+            32.0D,
             true,
             96.0D,
-            12.0D,
-            1.8D, // waterSwimSpeedMultiplier
-            true, // sleepEnabled
-            true, // sleepAtNight
-            false, // sleepAtDay
-            0.007f, // sleepStartChancePerTick
-            20 * 60, // sleepMinTicks
-            20 * 120, // sleepMaxTicks
-            true, // sleepRequiresRoof (must not see sky)
-            false, // sleepAllowedOnWaterSurface
-            true, // wakeOnDamage
-            true, // wakeOnAir
-            true, // wakeOnTouchingWater
-            true, // wakeOnUnderwater
-            true, // wakeOnSunlight
-            20, // sleepSearchMaxAttempts
-            8, // sleepSearchMaxPathAttempts
-            20 * 6, // sleepSearchTimeoutTicks
-            20 * 20, // sleepSearchCooldownTicks
-            1.0D, // sleepSearchRadiusMultiplier
-            20.0D, // sleepSearchMinDistance
-            true, // sleepSearchRespectHomeRadius
-            true, // sleepSearchRequireSolidGround
-            true // sleepSearchRequireRoof
+            16.0D,
+            1.8D,
+            true,
+            true,
+            false,
+            20 * 5,
+            0.80f,
+            0.45f,
+            20 * 90,
+            20 * 150,
+            100,
+            200,
+            2,
+            2,
+            true,
+            32,
+            4,
+            1,
+            3,
+            true,
+            Set.of(CMEntities.PIKACHU_MALE.get()),
+            true,
+            false,
+            true,
+            true,
+            true,
+            true,
+            true,
+            300,
+            32,
+            1,
+            12,
+            20 * 6,
+            20 * 3,
+            2.0D,
+            1.0D,
+            true,
+            true,
+            400
     );
 
     // ================================================================

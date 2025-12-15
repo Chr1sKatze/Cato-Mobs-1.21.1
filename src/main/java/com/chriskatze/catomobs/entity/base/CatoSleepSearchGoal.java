@@ -6,6 +6,7 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.EnumSet;
 
@@ -55,13 +56,6 @@ public class CatoSleepSearchGoal extends Goal {
     // ------------------------------------------------------------
     // Local tuning knobs (these are goal-internal, not per-species)
     // ------------------------------------------------------------
-
-    /** How many random candidate positions we try before giving up this search attempt. */
-    private static final int MAX_PICK_ATTEMPTS = 20;
-
-    /** How long we allow the mob to walk to the target before failing (10 seconds). */
-    private static final int SEARCH_TIMEOUT_TICKS = 20 * 10; // 10s to reach the spot
-
     public CatoSleepSearchGoal(CatoBaseMob mob) {
         this.mob = mob;
 
@@ -91,40 +85,38 @@ public class CatoSleepSearchGoal extends Goal {
         // 3) After a failed attempt, we wait a cooldown to avoid spam-searching
         if (mob.isSleepSearchOnCooldown()) return false;
 
-        // 4) Must be calm/idle: no combat target, not aggressive, and no current navigation
+        // 4) Must be calm/idle
         if (mob.getTarget() != null || mob.isAggressive()) return false;
-        if (!mob.getNavigation().isDone()) return false;
 
-        // 5) Only search during allowed time window (day/night) for this species
+        // 5) Only during allowed time window
         boolean isDay = mob.level().isDay();
         if (isDay && !info.sleepAtDay()) return false;
         if (!isDay && !info.sleepAtNight()) return false;
 
-        // 6) This goal ONLY makes sense if roof is required AND we currently have no roof.
-        // If roof isn't required, base sleep logic can handle sleeping anywhere.
-        // If we already have a roof (can't see sky), we also don't need to search.
+        // 6) Only makes sense if roof is required AND we currently see the sky
         if (!info.sleepRequiresRoof()) return false;
-        if (!mob.level().canSeeSky(mob.blockPosition())) return false;
+        int roofMax = Math.max(1, info.sleepSearchCeilingScanMaxBlocks());
 
-        // 7) Avoid searching if the mob is already physically sliding/moving a bit (knockback, water drift, etc.)
-        if (mob.getDeltaMovement().horizontalDistanceSqr() > 0.001D) return false;
+        // Only search if we do NOT have a roof within the allowed height
+        if (mob.isRoofed(mob.blockPosition(), roofMax)) return false;
 
-        // 8) Chance roll: we don't want search to start instantly every time conditions match.
-        // This uses the same "sleep start chance" value as normal sleeping.
-        if (mob.getRandom().nextFloat() >= info.sleepStartChancePerTick()) return false;
+        // Must actually want to sleep (set by base desire window)
+        if (!mob.wantsToSleepNow()) return false;
 
-        // 9) CRITICAL: pick a concrete roofed spot now.
-        // If no spot exists nearby, we apply a cooldown and abort.
+        // 8) Pick a roofed spot (this will try remembered spots first, then random search)
         this.targetPos = findRoofedSleepSpot(info);
 
         if (this.targetPos == null) {
-            // Prevent retrying every tick when the mob is in a huge open area.
-            mob.startSleepSearchCooldown(mob.getSpeciesInfo().sleepSearchCooldownTicks());
+            // ✅ NEW: give up this “desire episode” so we don’t keep re-triggering forever
+            mob.clearSleepDesire();
+
+            mob.startSleepSearchCooldown(info.sleepSearchCooldownTicks());
             return false;
         }
 
         return true;
     }
+
 
     /**
      * Determines whether we should KEEP running this goal.
@@ -159,23 +151,21 @@ public class CatoSleepSearchGoal extends Goal {
      */
     @Override
     public void start() {
-        // Defensive: should never happen because canUse() only returns true when targetPos != null.
         if (this.targetPos == null) {
             mob.setSleepSearching(false);
             mob.startSleepSearchCooldown(mob.getSpeciesInfo().sleepSearchCooldownTicks());
             return;
         }
 
-        // Mark searching so base sleep logic won't also roll sleep chance while we're walking somewhere.
         mob.setSleepSearching(true);
+        searchTimeoutTicks = Math.max(1, mob.getSpeciesInfo().sleepSearchTimeoutTicks());
 
-        // Start timeout countdown for reaching the spot.
-        searchTimeoutTicks = SEARCH_TIMEOUT_TICKS;
+        // TAKE CONTROL IMMEDIATELY
+        mob.getNavigation().stop();
+        mob.setDeltaMovement(mob.getDeltaMovement().multiply(0.0D, 1.0D, 0.0D));
 
-        // Use wanderWalkSpeed as travel speed to keep behavior consistent.
         double speed = Math.max(0.1D, mob.getSpeciesInfo().wanderWalkSpeed());
 
-        // Path to center of block so the mob doesn't aim at a corner.
         mob.getNavigation().moveTo(
                 targetPos.getX() + 0.5D,
                 targetPos.getY(),
@@ -209,10 +199,17 @@ public class CatoSleepSearchGoal extends Goal {
      */
     @Override
     public void tick() {
+        Level level = mob.level();
+        CatoMobSpeciesInfo info = mob.getSpeciesInfo();
+
         // Extra safety: if we lost our target somehow, bail and cooldown.
         if (targetPos == null) {
             mob.setSleepSearching(false);
-            mob.startSleepSearchCooldown(mob.getSpeciesInfo().sleepSearchCooldownTicks());
+
+            // ✅ NEW: we failed the search episode
+            mob.clearSleepDesire();
+
+            mob.startSleepSearchCooldown(info.sleepSearchCooldownTicks());
             stop();
             return;
         }
@@ -222,7 +219,10 @@ public class CatoSleepSearchGoal extends Goal {
 
         // Timeout => fail + cooldown, then stop searching.
         if (searchTimeoutTicks <= 0) {
-            mob.startSleepSearchCooldown(mob.getSpeciesInfo().sleepSearchCooldownTicks());
+            // ✅ NEW: we failed the search episode
+            mob.clearSleepDesire();
+
+            mob.startSleepSearchCooldown(info.sleepSearchCooldownTicks());
             stop();
             return;
         }
@@ -230,7 +230,7 @@ public class CatoSleepSearchGoal extends Goal {
         // Navigation can sometimes become "done" briefly during micro-stops or repaths.
         // If it's done and we haven't arrived, issue the move command again.
         if (mob.getNavigation().isDone()) {
-            double speed = Math.max(0.1D, mob.getSpeciesInfo().wanderWalkSpeed());
+            double speed = Math.max(0.1D, info.wanderWalkSpeed());
             mob.getNavigation().moveTo(
                     targetPos.getX() + 0.5D,
                     targetPos.getY(),
@@ -243,23 +243,48 @@ public class CatoSleepSearchGoal extends Goal {
         double distSqr = mob.distanceToSqr(Vec3.atBottomCenterOf(targetPos));
         if (distSqr <= 2.0D) { // ~1.4 blocks
 
-            // Verify that the final position is still roofed (no sky visible).
-            // Note: canSeeSky(pos) == true means "open sky", so we want the opposite.
-            if (!mob.level().canSeeSky(targetPos)) {
-                // Tell the base mob to begin sleeping immediately (server-side state).
+            // roof validation = "any block above within roofMax"
+            int roofMax = Math.max(1, info.sleepSearchCeilingScanMaxBlocks());
+            int roofDy = mob.roofDistance(targetPos, roofMax);
+
+            if (roofDy != -1) {
+
+                // Buddy override: optionally relocate to a better spot next to a sleeping buddy
+                if (info.sleepBuddyCanOverrideMemory()) {
+                    BlockPos buddySpot = findBuddyAdjacentSleepSpot(level, targetPos, info);
+
+                    if (buddySpot != null && !buddySpot.equals(targetPos)) {
+
+                        mob.strikeSleepSpot(targetPos);
+
+                        targetPos = buddySpot;
+
+                        double speed = Math.max(0.1D, info.wanderWalkSpeed());
+                        mob.getNavigation().moveTo(
+                                targetPos.getX() + 0.5D,
+                                targetPos.getY(),
+                                targetPos.getZ() + 0.5D,
+                                speed
+                        );
+
+                        return;
+                    }
+                }
+
+                // Commit: remember + sleep
+                mob.rememberSleepSpot(targetPos);
+                mob.clearSleepDesire();          // already in your code (keep this)
                 mob.beginSleepingFromGoal();
-
-                // Stop walking to avoid overshooting.
                 mob.getNavigation().stop();
-
-                // End goal cleanly (also clears "sleep searching").
                 stop();
                 return;
             }
 
-            // We arrived but somehow it became unroofed (tree got cut, block update, etc.)
-            // Treat as failure and apply cooldown.
-            mob.startSleepSearchCooldown(mob.getSpeciesInfo().sleepSearchCooldownTicks());
+            // No roof within roofMax blocks => fail + cooldown
+            //  we failed the search episode
+            mob.clearSleepDesire();
+
+            mob.startSleepSearchCooldown(info.sleepSearchCooldownTicks());
             stop();
         }
     }
@@ -280,77 +305,302 @@ public class CatoSleepSearchGoal extends Goal {
      * - null if no valid spot found within MAX_PICK_ATTEMPTS
      */
     private BlockPos findRoofedSleepSpot(CatoMobSpeciesInfo info) {
+
         Level level = mob.level();
 
-        // If this species stays near "home", search around that; otherwise search around current position.
         BlockPos center = (mob.shouldStayWithinHomeRadius() && mob.getHomePos() != null)
                 ? mob.getHomePos()
                 : mob.blockPosition();
 
-        // Use wander radii as the search radius baseline (keeps behavior consistent across systems).
-        double maxRadius = Math.max(info.wanderMaxRadius(), 4.0D);
-        double minRadius = Math.max(0.0D, Math.min(info.wanderMinRadius(), maxRadius));
+        double mul = Math.max(0.1D, info.sleepSearchRadiusMultiplier());
 
-        // Home radius enforcement (only applies if stayWithinHomeRadius is enabled).
-        double homeRadius = mob.shouldStayWithinHomeRadius() ? mob.getHomeRadius() : Double.MAX_VALUE;
-        double homeRadiusSqr = homeRadius * homeRadius;
+        double maxRadius = Math.max(info.wanderMaxRadius(), 4.0D) * mul;
+        double minRadius = Math.max(0.0D, Math.min(info.wanderMinRadius() * mul, maxRadius));
 
-        // Randomly sample candidate points in a ring around center.
-        for (int attempt = 0; attempt < MAX_PICK_ATTEMPTS; attempt++) {
+        double homeRadiusSqr = mob.shouldStayWithinHomeRadius()
+                ? mob.getHomeRadius() * mob.getHomeRadius()
+                : 0.0D;
+
+        int maxAttempts = Math.max(1, info.sleepSearchMaxAttempts());
+        int pathAttempts = 0;
+        int maxPathAttempts = Math.max(1, info.sleepSearchMaxPathAttempts());
+
+        // Headroom requirements
+        final int minHeadroom = Math.max(1, info.sleepSearchMinHeadroomBlocks());
+
+        // --------------------------------------------------------------
+        // 0) Try remembered sleep spots first (FIFO order)
+        // Strike on failure; delete only after repeated failures.
+        // --------------------------------------------------------------
+        if (isCurrentlySleepTime(info)) {
+            for (CatoBaseMob.SleepSpotMemory mem : mob.getRememberedSleepSpots()) {
+                BlockPos standPos = mem.pos;
+
+                if (!isRememberedSpotValid(info, standPos)) {
+                    mob.strikeSleepSpot(standPos);
+                    continue;
+                }
+
+                // ⭐ SUCCESS: reuse known-good spot
+                return standPos;
+            }
+        }
+
+        BlockPos bestPos = null;
+        int bestScore = Integer.MAX_VALUE;
+        double bestDistSqr = Double.MAX_VALUE;
+
+        // Cache / dedupe within THIS search run (prevents repeated expensive path checks)
+        java.util.Set<Long> testedPos = new java.util.HashSet<>();
+        java.util.Set<Long> failedPathPos = new java.util.HashSet<>();
+
+        for (int attempt = 0; attempt < maxAttempts; attempt++) {
             double angle = mob.getRandom().nextDouble() * (Math.PI * 2.0D);
             double dist = minRadius + mob.getRandom().nextDouble() * (maxRadius - minRadius);
 
-            int x = center.getX() + Mth.floor(Math.cos(angle) * dist);
-            int z = center.getZ() + Mth.floor(Math.sin(angle) * dist);
-            int y = center.getY();
-
-            BlockPos pos = new BlockPos(x, y, z);
-
-            // Respect home radius if enabled.
-            if (mob.shouldStayWithinHomeRadius() && center.distSqr(pos) > homeRadiusSqr) {
+            // optional min-distance bias
+            if (dist < info.sleepSearchMinDistance()) {
                 continue;
             }
 
-            // Find a solid ground block at/under this position.
+            int x = center.getX() + Mth.floor(Math.cos(angle) * dist);
+            int z = center.getZ() + Mth.floor(Math.sin(angle) * dist);
+            int y = mob.blockPosition().getY() + 8;
+
+            // Respect home radius if enabled.
+            if (info.sleepSearchRespectHomeRadius() && mob.shouldStayWithinHomeRadius()) {
+                int dxHome = x - center.getX();
+                int dzHome = z - center.getZ();
+                if ((double)(dxHome * dxHome + dzHome * dzHome) > homeRadiusSqr) {
+                    continue;
+                }
+            }
+
+            BlockPos pos = new BlockPos(x, y, z);
+
             BlockPos ground = findGround(level, pos);
             if (ground == null) continue;
 
-            // The mob stands on the block above ground.
             BlockPos standPos = ground.above();
 
-            // Must have space to stand.
-            if (!level.isEmptyBlock(standPos)) continue;
+            // Dedupe: don't evaluate the same standPos multiple times in one run
+            long key = standPos.asLong();
+            if (!testedPos.add(key)) continue;          // already tested
+            if (failedPathPos.contains(key)) continue;  // already known unreachable
 
-            // Must be roofed: if the stand position can see the sky, it's not valid.
-            if (level.canSeeSky(standPos)) continue;
+            // Must have enough vertical space to stand/sleep here (minHeadroom blocks of air)
+            boolean hasRoom = true;
+            for (int dy = 0; dy < minHeadroom; dy++) {
+                if (!level.isEmptyBlock(standPos.above(dy))) {
+                    hasRoom = false;
+                    break;
+                }
+            }
+            if (!hasRoom) continue;
 
-            // Valid target.
-            return standPos;
+            // ✅ NEW roof logic: "any block above within roofMax" (ignores time-of-day skylight)
+            int roofMax = Math.max(1, info.sleepSearchCeilingScanMaxBlocks());
+            int roofDy = mob.roofDistance(standPos, roofMax);
+            if (roofDy == -1) continue;
+
+            // Roof must be ABOVE our required headroom
+            if (roofDy < minHeadroom) continue;
+
+            // Must be pathable/reachable
+            var path = mob.getNavigation().createPath(standPos, 0);
+            pathAttempts++;
+
+            if (path == null || !path.canReach()) {
+                failedPathPos.add(key);
+
+                if (pathAttempts >= maxPathAttempts) {
+                    break; // stop searching this run
+                }
+                continue;
+            }
+
+            // Bias toward closer spots when score is equal
+            double distSqrToMob = mob.distanceToSqr(
+                    standPos.getX() + 0.5D,
+                    standPos.getY(),
+                    standPos.getZ() + 0.5D
+            );
+
+            // ✅ Score: prefer roof as low as possible but still valid
+            int score = Math.max(0, roofDy - minHeadroom);
+
+            // social sleeping bonus
+            int buddies = countSleepingBuddiesNear(level, standPos, info);
+            score -= buddies * Math.max(0, info.sleepBuddyScoreBonusPerBuddy());
+
+            if (score < bestScore || (score == bestScore && distSqrToMob < bestDistSqr)) {
+                bestScore = score;
+                bestDistSqr = distSqrToMob;
+                bestPos = standPos;
+            }
         }
 
-        // No valid spot found.
-        return null;
+        return bestPos;
     }
 
-    /**
-     * Finds the first non-air block by walking downward from a starting position.
-     * Returns the "ground" block (solid) or null if we never find one.
-     */
     private BlockPos findGround(Level level, BlockPos start) {
         BlockPos pos = start;
 
-        // Move downward while we're in air and also have air below (prevents stopping in mid-air pockets).
-        while (pos.getY() > level.getMinBuildHeight()
-                && level.isEmptyBlock(pos)
-                && level.isEmptyBlock(pos.below())) {
+        // If we start inside terrain, climb up to air first
+        while (pos.getY() < level.getMaxBuildHeight() && !level.isEmptyBlock(pos)) {
+            pos = pos.above();
+        }
+
+        // Then drop until we hit solid
+        while (pos.getY() > level.getMinBuildHeight() && level.isEmptyBlock(pos)) {
             pos = pos.below();
         }
 
-        // If we ended up still in air, there was no valid ground.
         if (level.isEmptyBlock(pos)) {
             return null;
         }
 
         return pos;
+    }
+
+    private boolean isCurrentlySleepTime(CatoMobSpeciesInfo info) {
+        boolean isDay = mob.level().isDay();
+        return (isDay && info.sleepAtDay()) || (!isDay && info.sleepAtNight());
+    }
+
+    private boolean isRememberedSpotValid(CatoMobSpeciesInfo info, BlockPos standPos) {
+        Level level = mob.level();
+        if (standPos == null) return false;
+
+        // Respect home radius if you want sleep search to do so
+        if (info.sleepSearchRespectHomeRadius()
+                && mob.shouldStayWithinHomeRadius()
+                && mob.getHomePos() != null) {
+
+            BlockPos home = mob.getHomePos();
+            double r = mob.getHomeRadius();
+            double dx = (standPos.getX() + 0.5D) - (home.getX() + 0.5D);
+            double dz = (standPos.getZ() + 0.5D) - (home.getZ() + 0.5D);
+            if ((dx * dx + dz * dz) > (r * r)) return false;
+        }
+
+        // Must have enough vertical space (minHeadroom blocks of air)
+        int minHeadroom = Math.max(1, info.sleepSearchMinHeadroomBlocks());
+        for (int dy = 0; dy < minHeadroom; dy++) {
+            if (!level.isEmptyBlock(standPos.above(dy))) return false;
+        }
+
+        // ✅ NEW roof rule: any block counts as "roof" if it's within roofMax blocks above standPos
+        int roofMax = Math.max(1, info.sleepSearchCeilingScanMaxBlocks());
+        int roofDy = mob.roofDistance(standPos, roofMax);
+        if (roofDy == -1) return false;
+
+        // Roof must be ABOVE our required headroom
+        if (roofDy < minHeadroom) return false;
+
+        // Must still be reachable
+        var path = mob.getNavigation().createPath(standPos, 0);
+        return path != null && path.canReach();
+    }
+
+    private int countSleepingBuddiesNear(Level level, BlockPos standPos, CatoMobSpeciesInfo info) {
+        if (!info.sleepPreferSleepingBuddies()) return 0;
+        if (info.sleepBuddyTypes() == null || info.sleepBuddyTypes().isEmpty()) return 0;
+
+        double r = Math.max(0.0D, info.sleepBuddySearchRadius());
+        if (r <= 0.0D) return 0;
+
+        var box = new net.minecraft.world.phys.AABB(
+                standPos.getX() - r, standPos.getY() - 2, standPos.getZ() - r,
+                standPos.getX() + 1 + r, standPos.getY() + 2, standPos.getZ() + 1 + r
+        );
+
+        int max = Math.max(0, info.sleepBuddyMaxCount());
+        if (max <= 0) return 0;
+
+        int count = 0;
+
+        for (var e : level.getEntities(mob, box, ent -> ent instanceof CatoBaseMob)) {
+            CatoBaseMob other = (CatoBaseMob) e;
+
+            if (other == mob) continue;
+            if (!other.isSleeping()) continue;
+
+            // only count types you configured
+            if (!info.sleepBuddyTypes().contains(other.getType())) continue;
+
+            count++;
+            if (count >= max) break;
+        }
+
+        return count;
+    }
+
+    @Nullable
+    private BlockPos findBuddyAdjacentSleepSpot(Level level, BlockPos fromPos, CatoMobSpeciesInfo info) {
+
+        // 1) Find nearest sleeping buddy within radius
+        int r = (int) Math.ceil(Math.max(0.0D, info.sleepBuddySearchRadius()));
+        if (r <= 0) return null;
+
+        var box = new net.minecraft.world.phys.AABB(fromPos).inflate(r, 4, r);
+
+        var buddies = level.getEntitiesOfClass(
+                CatoBaseMob.class,
+                box,
+                e -> e != mob
+                        && e.isAlive()
+                        && e.isSleeping()
+                        && (info.sleepBuddyTypes() == null
+                        || info.sleepBuddyTypes().isEmpty()
+                        || info.sleepBuddyTypes().contains(e.getType()))
+        );
+
+        if (buddies.isEmpty()) return null;
+
+        CatoBaseMob nearest = null;
+        double best = Double.MAX_VALUE;
+        for (CatoBaseMob b : buddies) {
+            double d = b.distanceToSqr(mob);
+            if (d < best) {
+                best = d;
+                nearest = b;
+            }
+        }
+        if (nearest == null) return null;
+
+        // 2) Try to find a valid standPos near the buddy
+        int rr = Math.max(1, info.sleepBuddyRelocateRadiusBlocks());
+
+        BlockPos buddyBase = nearest.blockPosition();
+
+        BlockPos bestPos = null;
+        double bestDistSqr = Double.MAX_VALUE;
+
+        for (int dx = -rr; dx <= rr; dx++) {
+            for (int dz = -rr; dz <= rr; dz++) {
+                if (dx == 0 && dz == 0) continue;
+
+                BlockPos candidate = buddyBase.offset(dx, 0, dz);
+
+                // snap to ground like your normal search does
+                BlockPos ground = findGround(level, candidate.above(8));
+                if (ground == null) continue;
+
+                BlockPos standPos = ground.above();
+
+                // Must be valid under the same rules as remembered spots
+                if (!isRememberedSpotValid(info, standPos)) continue;
+
+                // Prefer the closest valid one to the buddy (snuggly)
+                double d2 = standPos.distSqr(buddyBase);
+                if (d2 < bestDistSqr) {
+                    bestDistSqr = d2;
+                    bestPos = standPos;
+                }
+            }
+        }
+
+        return bestPos;
     }
 }

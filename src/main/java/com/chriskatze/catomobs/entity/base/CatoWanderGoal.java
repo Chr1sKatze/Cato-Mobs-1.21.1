@@ -123,8 +123,8 @@ public class CatoWanderGoal extends Goal {
         }
 
         // Low random chance per tick (similar to RandomStrollGoal):
-        // 1/120 chance each tick -> on average once every ~6 seconds.
-        if (mob.getRandom().nextInt(120) != 0) {
+        // 1/100 chance each tick -> on average once every ~6 seconds.
+        if (mob.getRandom().nextInt(100) != 0) {
             return false;
         }
 
@@ -181,10 +181,10 @@ public class CatoWanderGoal extends Goal {
      */
     @Override
     public void stop() {
-        // Reset authoritative movement state so client animations go back to idle.
-        mob.setMoveMode(CatoBaseMob.MOVE_IDLE);
+        // IMPORTANT: stop the path so a previous run-speed path can't keep executing
+        mob.getNavigation().stop();
 
-        // Hook for cleanup (stop particles, reset state, etc.)
+        mob.setMoveMode(CatoBaseMob.MOVE_IDLE);
         mob.onWanderStop();
     }
 
@@ -204,18 +204,21 @@ public class CatoWanderGoal extends Goal {
      * Navigation can sometimes temporarily flip state during repaths/stutters.
      * This makes the client-side animation state more stable and correct.
      */
+    private int notMovingTicks = 0;
+
     @Override
     public void tick() {
-        // Use the same condition as canContinueToUse().
         boolean moving = mob.getNavigation().isInProgress();
 
-        // If nav isn't moving anymore, ensure we go idle.
         if (!moving) {
-            mob.setMoveMode(CatoBaseMob.MOVE_IDLE);
+            notMovingTicks++;
+            if (notMovingTicks >= 2) { // 2–3 ticks is usually enough
+                mob.setMoveMode(CatoBaseMob.MOVE_IDLE);
+            }
             return;
         }
 
-        // Still moving -> keep whichever mode this wander chose.
+        notMovingTicks = 0;
         mob.setMoveMode(running ? CatoBaseMob.MOVE_RUN : CatoBaseMob.MOVE_WALK);
     }
 
@@ -263,13 +266,17 @@ public class CatoWanderGoal extends Goal {
 
             int x = center.getX() + Mth.floor(dx);
             int z = center.getZ() + Mth.floor(dz);
-            int y = center.getY();
+            int y = mob.blockPosition().getY() + 8; // start a bit above the mob, then drop
 
             BlockPos pos = new BlockPos(x, y, z);
 
             // Enforce home circle if enabled (keeps mobs from drifting too far away).
-            if (mob.shouldStayWithinHomeRadius() && center.distSqr(pos) > homeRadiusSqr) {
-                continue;
+            if (mob.shouldStayWithinHomeRadius()) {
+                int dxHome = x - center.getX();
+                int dzHome = z - center.getZ();
+                if ((double)(dxHome * dxHome + dzHome * dzHome) > homeRadiusSqr) {
+                    continue;
+                }
             }
 
             // Find a solid ground block at/under this position.
@@ -286,8 +293,7 @@ public class CatoWanderGoal extends Goal {
             // Decide walk vs run based on how far away this target is.
             decideRunOrWalk(dist);
 
-            // Return a Vec3 at the center/bottom of the ground block (nice for navigation targets).
-            return Vec3.atBottomCenterOf(ground);
+            return Vec3.atBottomCenterOf(ground.above());
         }
 
         // No valid position found this attempt.
@@ -322,27 +328,26 @@ public class CatoWanderGoal extends Goal {
         }
     }
 
-    /**
-     * Very simple "find ground" helper:
-     * Starting from the candidate position, walk downward until we hit a non-empty block
-     * (or world bottom). This is a lightweight alternative to more complex pathfinding checks.
-     */
+    /** Find the first solid block at or below start (robust for superflat + normal worlds). */
     private BlockPos findGround(Level level, BlockPos start) {
         BlockPos pos = start;
 
-        // Drop until we reach solid or world bottom.
-        // The "pos and pos.below" empty check avoids stopping inside floating air pockets.
-        while (pos.getY() > level.getMinBuildHeight()
-                && level.isEmptyBlock(pos)
-                && level.isEmptyBlock(pos.below())) {
+        // If we start inside terrain (rare), climb up until we're in air.
+        while (pos.getY() < level.getMaxBuildHeight() && !level.isEmptyBlock(pos)) {
+            pos = pos.above();
+        }
+
+        // Now drop down until we hit a solid block, or we hit world bottom.
+        while (pos.getY() > level.getMinBuildHeight() && level.isEmptyBlock(pos)) {
             pos = pos.below();
         }
 
-        // If we still ended in air, there's no valid ground here.
+        // If we reached bottom and it's still empty, we failed.
         if (level.isEmptyBlock(pos)) {
             return null;
         }
 
+        // 'pos' is solid ground block (stand position would be pos.above()).
         return pos;
     }
 }

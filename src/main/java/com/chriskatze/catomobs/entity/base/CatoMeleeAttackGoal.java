@@ -1,6 +1,7 @@
 package com.chriskatze.catomobs.entity.base;
 
 import com.chriskatze.catomobs.entity.CatoMobSpeciesInfo;
+import com.chriskatze.catomobs.entity.CatoMobTemperament;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.player.Player;
@@ -75,37 +76,17 @@ public class CatoMeleeAttackGoal extends Goal {
         this.setFlags(EnumSet.of(Goal.Flag.MOVE, Goal.Flag.LOOK));
     }
 
-    /**
-     * Can this goal start right now?
-     * This is called often by the AI system, so we throttle to once per 20 ticks.
-     */
     @Override
     public boolean canUse() {
-        long gameTime = this.mob.level().getGameTime();
-
-        // Vanilla-style throttle: only evaluate once per second.
-        if (gameTime - this.lastCanUseCheck < 20L) {
-            return false;
-        }
-        this.lastCanUseCheck = gameTime;
-
-        // Must have a valid living target
         LivingEntity target = this.mob.getTarget();
-        if (target == null || !target.isAlive()) {
-            return false;
-        }
+        if (target == null || !target.isAlive()) return false;
 
-        // If we can path to the target, start chasing
-        var navigation = this.mob.getNavigation();
-        var path = navigation.createPath(target, 0);
-        if (path != null) {
-            return true;
-        }
+        if (target instanceof Player p && (p.isCreative() || p.isSpectator())) return false;
 
-        // If we can't path, we can still start if we are already within attack reach.
-        double distSqr = this.mob.distanceToSqr(target.getX(), target.getY(), target.getZ());
-        double reachSqr = this.getAttackReachSqr(target);
-        return distSqr <= reachSqr;
+        CatoMobTemperament t = this.mob.getSpeciesInfo().temperament();
+        if (t != CatoMobTemperament.HOSTILE && this.mob.angerTime <= 0) return false;
+
+        return this.mob.isWithinRestriction(target.blockPosition());
     }
 
     /**
@@ -120,6 +101,12 @@ public class CatoMeleeAttackGoal extends Goal {
 
         // Stop if target is gone
         if (target == null || !target.isAlive()) {
+            return false;
+        }
+
+        // Neutral retaliators should ONLY keep chasing while anger is active
+        CatoMobTemperament t = this.mob.getSpeciesInfo().temperament();
+        if (t != CatoMobTemperament.HOSTILE && this.mob.angerTime <= 0) {
             return false;
         }
 
@@ -164,30 +151,17 @@ public class CatoMeleeAttackGoal extends Goal {
         this.attackCooldown = 0;
     }
 
-    /**
-     * Called once when the goal stops.
-     * - Optionally clears target (vanilla behavior: only clears if creative/spectator)
-     * - Stops pathing
-     * - Resets movement mode to IDLE (for client animation)
-     * - Calls the chase stop hook
-     */
     @Override
     public void stop() {
         LivingEntity target = this.mob.getTarget();
 
-        // Match vanilla:
-        // If the target is creative/spectator, NO_CREATIVE_OR_SPECTATOR will fail, so we clear it.
-        if (!EntitySelector.NO_CREATIVE_OR_SPECTATOR.test(target)) {
+        if (target != null && !EntitySelector.NO_CREATIVE_OR_SPECTATOR.test(target)) {
             this.mob.setTarget(null);
         }
 
         this.mob.setAggressive(false);
         this.mob.getNavigation().stop();
-
-        // Authoritative movement mode for animations
         this.mob.setMoveMode(CatoBaseMob.MOVE_IDLE);
-
-        // Hook for subclasses (clear run anim, clear combat stance, etc.)
         this.mob.onChaseStop();
     }
 
@@ -211,48 +185,58 @@ public class CatoMeleeAttackGoal extends Goal {
     @Override
     public void tick() {
         LivingEntity target = this.mob.getTarget();
-        if (target == null) {
-            return;
-        }
+        if (target == null) return;
 
-        // Always face the target (max yaw/pitch here are just look control limits)
         this.mob.getLookControl().setLookAt(target, 30.0F, 30.0F);
 
         double distSqr = this.mob.distanceToSqr(target.getX(), target.getY(), target.getZ());
         double reachSqr = this.getAttackReachSqr(target);
+        boolean inRange = distSqr <= reachSqr;
 
-        // ----------------------------
-        // Path recalculation (repath)
-        // ----------------------------
-        this.ticksUntilNextPathRecalc = Math.max(this.ticksUntilNextPathRecalc - 1, 0);
-
-        if (this.ticksUntilNextPathRecalc == 0) {
-            boolean canSee = this.mob.getSensing().hasLineOfSight(target);
-
-            // If we require vision and can't see, stop chasing for now
-            if (!canSee && !this.followEvenIfNotSeen) {
-                this.mob.getNavigation().stop();
-            } else {
-                // Otherwise (or if followEvenIfNotSeen), keep moving toward target
-                this.mob.getNavigation().moveTo(target, this.speedModifier);
+        // ✅ If we're in range, STOP moving and DON'T allow repath to re-start movement
+        if (inRange) {
+            this.mob.getNavigation().stop();
+            this.ticksUntilNextPathRecalc = 4; // small delay so we don't instantly re-path next tick
+        } else {
+            // ✅ If navigation stalled but we're NOT in range, force an immediate repath
+            if (this.mob.getNavigation().isDone()) {
+                this.ticksUntilNextPathRecalc = 0;
             }
 
-            // Repath interval: 4–10 ticks (vanilla-like)
-            this.ticksUntilNextPathRecalc = 4 + this.mob.getRandom().nextInt(7);
+            // ----------------------------
+            // Path recalculation (repath)
+            // ----------------------------
+            this.ticksUntilNextPathRecalc = Math.max(this.ticksUntilNextPathRecalc - 1, 0);
+
+            if (this.ticksUntilNextPathRecalc == 0) {
+                boolean canSee = this.mob.getSensing().hasLineOfSight(target);
+
+                if (!canSee && !this.followEvenIfNotSeen) {
+                    this.mob.getNavigation().stop();
+                    this.ticksUntilNextPathRecalc = 4;
+                } else {
+                    // IMPORTANT: check return value (moveTo can fail sometimes)
+                    boolean started = this.mob.getNavigation().moveTo(target, this.speedModifier);
+
+                    if (!started) {
+                        // Retry very soon if pathfinding failed this tick
+                        this.ticksUntilNextPathRecalc = 1;
+                    } else {
+                        // Faster repath when far away helps follow a moving player better
+                        this.ticksUntilNextPathRecalc = (distSqr > 16 * 16)
+                                ? (2 + this.mob.getRandom().nextInt(3))   // 2–4 ticks when far
+                                : (4 + this.mob.getRandom().nextInt(7));  // 4–10 ticks when close
+                    }
+                }
+            }
         }
 
         // ----------------------------
         // Attack cooldown
         // ----------------------------
-        if (this.attackCooldown > 0) {
-            this.attackCooldown--;
-        }
+        if (this.attackCooldown > 0) this.attackCooldown--;
 
-        // Start a new timed attack only if:
-        // - target is within reach
-        // - cooldown is ready
-        if (distSqr <= reachSqr && this.attackCooldown <= 0) {
-            // This schedules damage to happen later in CatoBaseMob.aiStep()
+        if (inRange && this.attackCooldown <= 0) {
             if (this.mob.startTimedAttack(target)) {
                 this.attackCooldown = this.baseAttackCooldownTicks;
             }
@@ -262,12 +246,8 @@ public class CatoMeleeAttackGoal extends Goal {
         // Animation / movement mode sync
         // ----------------------------
         boolean moving = !this.mob.getNavigation().isDone();
-
-        // If navigation is actively moving, use RUN mode.
-        // If in range and standing still, use IDLE (or you could choose WALK if desired).
         this.mob.setMoveMode(moving ? CatoBaseMob.MOVE_RUN : CatoBaseMob.MOVE_IDLE);
 
-        // Hook for mob-specific logic (e.g., "isMoving" affects run cycle)
         this.mob.onChaseTick(target, moving);
     }
 

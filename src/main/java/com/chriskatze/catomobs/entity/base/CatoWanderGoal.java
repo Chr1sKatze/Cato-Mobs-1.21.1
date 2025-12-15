@@ -112,29 +112,18 @@ public class CatoWanderGoal extends Goal {
      */
     @Override
     public boolean canUse() {
-        // Don't wander while being ridden or riding something.
-        if (mob.isPassenger() || mob.isVehicle()) {
-            return false;
-        }
+        if (mob.isSleeping()) return false;
+        if (mob.getTarget() != null) return false;
+        if (mob.isAggressive()) return false;
+        if (mob.angerTime > 0) return false;
 
-        // Only start wandering if we are currently not pathing anywhere.
-        if (!mob.getNavigation().isDone()) {
-            return false;
-        }
+        if (mob.isPassenger() || mob.isVehicle()) return false;
+        if (!mob.getNavigation().isDone()) return false;
+        if (mob.getRandom().nextInt(100) != 0) return false;
 
-        // Low random chance per tick (similar to RandomStrollGoal):
-        // 1/100 chance each tick -> on average once every ~6 seconds.
-        if (mob.getRandom().nextInt(100) != 0) {
-            return false;
-        }
-
-        // Choose a destination; this will also decide walk vs run.
         Vec3 target = this.pickPosition();
-        if (target == null) {
-            return false;
-        }
+        if (target == null) return false;
 
-        // Store destination for start().
         this.wantedX = target.x;
         this.wantedY = target.y;
         this.wantedZ = target.z;
@@ -142,12 +131,13 @@ public class CatoWanderGoal extends Goal {
         return true;
     }
 
-    /**
-     * Keep wandering while navigation is actively pathing.
-     * This matches what we also use in tick() for consistent MOVE_MODE syncing.
-     */
     @Override
     public boolean canContinueToUse() {
+        if (mob.isSleeping()) return false;
+        if (mob.getTarget() != null) return false;
+        if (mob.isAggressive()) return false;
+        if (mob.angerTime > 0) return false;
+
         return mob.getNavigation().isInProgress();
     }
 

@@ -1,6 +1,7 @@
 package com.chriskatze.catomobs.entity.base;
 
 import com.chriskatze.catomobs.entity.*;
+import com.chriskatze.catomobs.entity.component.WaterMovementComponent;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
@@ -21,244 +22,251 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.crafting.Ingredient;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.List;
+
 /**
+ * CatoBaseMob
+ *
  * Base class for all CatoMobs.
  *
  * Responsibilities:
- * 1) Central place to register and configure goals (sleep, wander, combat, etc.).
- * 2) Shared "timed attack" system (start anim now, deal damage later at a specific tick).
- * 3) Shared sleep system (random sleep chance + optional roof-search goal).
- * 4) Shared aggression/anger state handling (retaliate for X ticks, then calm down).
- * 5) Shared "home position + radius" concept used by wandering / sleep search.
- * 6) Shared synced data (sleep flag, movement mode, visually-angry flag).
+ * 1) Central place to register/configure goals (sleep, wander, combat, etc.)
+ * 2) Shared timed-attack system (start anim now, apply damage later)
+ * 3) Shared sleep system (attempt pacing + desire window + roof search support)
+ * 4) Shared aggression/retaliation state (anger timer + visual angry flag)
+ * 5) Shared home position + radius concept (used by wander and sleep search)
+ * 6) Shared synced state for client visuals (sleeping, move mode, visually angry)
  *
  * Subclasses provide:
- * - species info (CatoMobSpeciesInfo)
- * - optional overrides for animation hooks (attack start/end, wander start/stop, chase start/tick/stop)
+ * - species info (CatoMobSpeciesInfo) which drives ALL tuning
+ * - optional animation hooks (attack start/end, wander start/stop, chase hooks)
  */
 public abstract class CatoBaseMob extends Animal {
 
     // ================================================================
-    // Configuration toggles (subclass enables via helper methods)
+    // 0) PUBLIC CONSTANTS (synced animation intent, NOT vanilla speed)
     // ================================================================
 
-    /** If set, the mob will add a TemptGoal (follow the item) */
-    protected Ingredient temptItem = null;
-
-    /** If true, the mob will add BreedGoal + FollowParentGoal */
-    protected boolean canBreed = false;
-
-    // ================================================================
-    // Aggression / retaliation
-    // ================================================================
-
-    /**
-     * How long this mob should stay "angry" (in ticks).
-     * While > 0, we keep target + aggressive state and do angry-looking-at-target.
-     * When it hits 0, we clear target + aggression and cancel attack state.
-     */
-    protected int angerTime = 0;
-
-    // ================================================================
-    // Timed attack system (animation-driven attacks)
-    // ================================================================
-
-    /**
-     * The target that will actually receive damage when the "hit moment" arrives.
-     * We store this when the AI decides to attack, then apply damage later in aiStep().
-     */
-    protected LivingEntity queuedAttackTarget = null;
-
-    /** Server-side countdown until the hit moment (ticks). When it reaches 0, we deal damage. */
-    protected int attackTicksUntilHit = -1;
-
-    /**
-     * Server-side countdown for how long the attack animation is considered active.
-     * Used to prevent restarting attacks while already mid-swing.
-     */
-    protected int attackAnimTicksRemaining = 0;
-
-    // ================================================================
-    // Home position (for "stay within radius" behavior)
-    // ================================================================
-
-    /**
-     * If the species has "stayWithinHomeRadius", we store the first position as a home center.
-     * Wander + sleep search goals can then use this center to keep the mob near home.
-     */
-    protected BlockPos homePos = null;
-
-    // ================================================================
-    // Synced data (client visuals)
-    // ================================================================
-
-    /**
-     * Synced sleeping flag.
-     * - Written server-side (tickSleepServer, beginSleepingFromGoal)
-     * - Read client-side for animations / visuals
-     */
-    private static final EntityDataAccessor<Boolean> DATA_SLEEPING =
-            SynchedEntityData.defineId(CatoBaseMob.class, EntityDataSerializers.BOOLEAN);
-
-    /** Synced integer representing the current movement intent */
-    private static final EntityDataAccessor<Integer> DATA_MOVE_MODE =
-            SynchedEntityData.defineId(CatoBaseMob.class, EntityDataSerializers.INT);
-
-    /**
-     * This is *visual* anger (used for overlays, faces, animation layers).
-     * It mirrors server aggression state in a client-friendly synced boolean.
-     */
-    private static final EntityDataAccessor<Boolean> DATA_VISUALLY_ANGRY =
-            SynchedEntityData.defineId(CatoBaseMob.class, EntityDataSerializers.BOOLEAN);
-
-    // ================================================================
-    // Sleep system (server state)
-    // ================================================================
-
-    /**
-     * Server-only: how many ticks of sleep remain.
-     * Decrements each tick while sleeping; when it reaches 0 we wake up.
-     */
-    private int sleepTicksRemaining = 0;
-
-    /**
-     * Not synced. This is purely a server-side "internal" flag used to prevent
-     * re-rolling sleep chance while we are already searching for a roofed spot.
-     *
-     * - Set by CatoSleepSearchGoal.start()
-     * - Cleared by CatoSleepSearchGoal.stop()
-     */
-    private boolean sleepSearching = false;
-
-    /**
-     * Server-side cooldown timer for sleep searching.
-     * Prevents the mob from attempting a roof-search every single tick if there is no roof nearby.
-     */
-    private long sleepSearchCooldownUntil = 0L;
-
-    // ================================================================
-    // Sleep attempt pacing (server-only)
-    // ================================================================
-
-    /** Next tick at which we are allowed to roll "start sleeping" (attempt-based, not per-tick). */
-    private long nextSleepAttemptTick = 0L;
-
-    // ================================================================
-    // Move mode (authoritative animation intent)
-    // ================================================================
-
-    /**
-     * These are NOT Minecraft movement speeds; they are animation intent/state.
-     * Goals set this state so the client can always pick the correct animation.
-     */
+    /** Animation intent: stand/idle */
     public static final int MOVE_IDLE = 0;
+    /** Animation intent: walking locomotion */
     public static final int MOVE_WALK = 1;
+    /** Animation intent: running locomotion */
     public static final int MOVE_RUN  = 2;
 
     // ================================================================
-    // Construction & required overrides
+    // 1) SPECIES + PRIORITIES (subclass contract)
     // ================================================================
 
-    protected CatoBaseMob(EntityType<? extends Animal> type, Level level) {
-        super(type, level);
-    }
-
-    /**
-     * Each concrete mob must provide its species info.
-     * This record holds movement type, temperament, stats, sleep config, wander config, etc.
-     */
+    /** Each concrete mob must provide species tuning (sleep/combat/wander/etc). */
     protected abstract CatoMobSpeciesInfo getSpeciesInfo();
 
     /**
-     * Goal priority profile:
-     * - central place to tune goal priorities and enable/disable entire groups of goals.
-     * Subclasses can override this to provide different priorities per mob.
+     * Central goal priority profile.
+     * Subclasses can override this to adjust priorities/feature flags per mob.
      */
     protected CatoGoalPriorityProfile getGoalPriorities() {
         return CatoGoalPriorityProfile.defaults();
     }
 
     // ================================================================
-    // Synced data registration
+    // 2) CONFIG TOGGLES (enabled by subclass via helper methods)
+    // ================================================================
+
+    /** If set, registerGoals() may add a TemptGoal (follow the item). */
+    protected Ingredient temptItem = null;
+
+    /** If true, registerGoals() may add BreedGoal + FollowParentGoal. */
+    protected boolean canBreed = false;
+
+    // ================================================================
+    // 2.5) WATER MOVEMENT COMPONENT (travel() helpers)
+    // ================================================================
+
+    @Nullable
+    private WaterMovementComponent waterMovement;
+
+    protected final WaterMovementComponent waterMovement() {
+        if (waterMovement == null) {
+            var wm = this.getSpeciesInfo().waterMovement();
+            if (wm == null) {
+                wm = CatoMobSpeciesInfo.WaterMovementConfig.disabled();
+            }
+
+            waterMovement = new WaterMovementComponent(
+                    new WaterMovementComponent.Config(
+                            wm.dampingEnabled(),
+                            wm.verticalDamping(),
+                            wm.verticalSpeedClamp(),
+                            wm.dampingApplyThreshold()
+                    )
+            );
+        }
+        return waterMovement;
+    }
+
+    // ================================================================
+    // 3) HOME POSITION (used by wandering / sleep search bounds)
     // ================================================================
 
     /**
-     * Register synced data fields.
-     * Runs on both sides; initial values must be provided here.
+     * If the species enables "stayWithinHomeRadius", we capture the first position as home.
+     * Goals (wander/sleep search) use this as their center.
      */
-    @Override
-    protected void defineSynchedData(SynchedEntityData.Builder builder) {
-        super.defineSynchedData(builder);
-        builder.define(DATA_MOVE_MODE, MOVE_IDLE);
-        builder.define(DATA_VISUALLY_ANGRY, false);
-        builder.define(DATA_SLEEPING, false);
-    }
-
-    // ================================================================
-    // Simple state accessors (synced + local)
-    // ================================================================
-
-    /** @return true if server says we're sleeping (synced to client for visuals) */
-    public boolean isSleeping() {
-        return this.entityData.get(DATA_SLEEPING);
-    }
-
-    /** Server-side setter for sleep flag */
-    protected void setSleeping(boolean sleeping) {
-        this.entityData.set(DATA_SLEEPING, sleeping);
-    }
-
-    public boolean isSleepSearching() { return sleepSearching; }
-    public void setSleepSearching(boolean searching) { this.sleepSearching = searching; }
-
-    /** @return current synced move mode (IDLE/WALK/RUN) */
-    public int getMoveMode() {
-        return this.entityData.get(DATA_MOVE_MODE);
-    }
-
-    /**
-     * Server-side setter for move mode (synced to clients).
-     * Typically called by goals like CatoWanderGoal and CatoMeleeAttackGoal.
-     */
-    protected void setMoveMode(int mode) {
-        this.entityData.set(DATA_MOVE_MODE, mode);
-    }
-
-    /** @return true if the client should show angry visuals */
-    public boolean isVisuallyAngry() {
-        return this.entityData.get(DATA_VISUALLY_ANGRY);
-    }
-
-    /** Server-side setter; clients read to display overlays/animations */
-    protected void setVisuallyAngry(boolean angry) {
-        this.entityData.set(DATA_VISUALLY_ANGRY, angry);
-    }
+    protected BlockPos homePos = null;
 
     public BlockPos getHomePos() { return homePos; }
     public void setHomePos(BlockPos homePos) { this.homePos = homePos; }
 
-    /** Convenience so goals don't have to touch species info directly. */
+    /** Convenience wrappers so goals don’t have to poke species info directly. */
     public boolean shouldStayWithinHomeRadius() { return getSpeciesInfo().stayWithinHomeRadius(); }
     public double getHomeRadius() { return getSpeciesInfo().homeRadius(); }
 
     // ================================================================
-    // Configuration helpers (called by subclass constructors)
+    // 4) SYNCED DATA (client visuals)
     // ================================================================
 
-    /** Enables temptation behavior (adds TemptGoal in registerGoals if priorities allow it) */
+    /** Server authoritative sleeping flag (client uses it for animations). */
+    private static final EntityDataAccessor<Boolean> DATA_SLEEPING =
+            SynchedEntityData.defineId(CatoBaseMob.class, EntityDataSerializers.BOOLEAN);
+
+    /** Server authoritative movement intent (IDLE/WALK/RUN). */
+    private static final EntityDataAccessor<Integer> DATA_MOVE_MODE =
+            SynchedEntityData.defineId(CatoBaseMob.class, EntityDataSerializers.INT);
+
+    /** Visual-only anger flag synced to client (overlays/expressions). */
+    private static final EntityDataAccessor<Boolean> DATA_VISUALLY_ANGRY =
+            SynchedEntityData.defineId(CatoBaseMob.class, EntityDataSerializers.BOOLEAN);
+
+    /** Synced: is currently playing attack animation (for GeckoLib / client visuals). */
+    private static final EntityDataAccessor<Boolean> DATA_ATTACKING =
+            SynchedEntityData.defineId(CatoBaseMob.class, EntityDataSerializers.BOOLEAN);
+
+    @Override
+    protected void defineSynchedData(SynchedEntityData.Builder builder) {
+        super.defineSynchedData(builder);
+        builder.define(DATA_MOVE_MODE, MOVE_IDLE);
+        builder.define(DATA_ATTACKING, false);
+        builder.define(DATA_VISUALLY_ANGRY, false);
+        builder.define(DATA_SLEEPING, false);
+    }
+
+    // --- Synced accessors ---
+    public boolean isSleeping() { return this.entityData.get(DATA_SLEEPING); }
+    protected void setSleeping(boolean sleeping) { this.entityData.set(DATA_SLEEPING, sleeping); }
+
+    public int getMoveMode() { return this.entityData.get(DATA_MOVE_MODE); }
+    protected void setMoveMode(int mode) { this.entityData.set(DATA_MOVE_MODE, mode); }
+
+    /** For animations: true while we want the attack animation to play. */
+    public boolean isAttacking() { return this.entityData.get(DATA_ATTACKING); }
+    protected void setAttacking(boolean attacking) { this.entityData.set(DATA_ATTACKING, attacking); }
+
+    public boolean isVisuallyAngry() { return this.entityData.get(DATA_VISUALLY_ANGRY); }
+    protected void setVisuallyAngry(boolean angry) { this.entityData.set(DATA_VISUALLY_ANGRY, angry); }
+
+    // ================================================================
+    // 5) AGGRESSION / RETALIATION (server-side)
+    // ================================================================
+
+    /**
+     * How long (ticks) the mob should remain angry after being hurt.
+     * While >0: keep target/aggressive state, look at target, and show visual anger.
+     * When reaches 0: clear target/aggression and cancel attack state.
+     */
+    protected int angerTime = 0;
+
+    // ================================================================
+    // 6) TIMED ATTACK SYSTEM (server-side)
+    // ================================================================
+
+    /**
+     * Target that will receive damage when "hit moment" arrives.
+     * Stored when AI starts an attack, damage applied later in aiStep().
+     */
+    protected LivingEntity queuedAttackTarget = null;
+
+    /** Countdown until the hit moment. When it reaches 0, we deal damage once. */
+    protected int attackTicksUntilHit = -1;
+
+    /**
+     * Countdown for the attack animation active window.
+     * Prevents restarting attacks mid-swing.
+     */
+    protected int attackAnimTicksRemaining = 0;
+
+    // ================================================================
+    // 7) SLEEP SYSTEM STATE (server-only)
+    // ================================================================
+
+    /** Current sleep duration timer. Decrements while sleeping; when 0 we may extend or wake. */
+    private int sleepTicksRemaining = 0;
+
+    /**
+     * Internal flag: "I am currently searching for a sleep spot".
+     * Set/cleared by CatoSleepSearchGoal so base logic doesn’t re-roll sleep attempts.
+     */
+    private boolean sleepSearching = false;
+
+    /** Cooldown timer after failed search so we don’t spam-search every tick. */
+    private long sleepSearchCooldownUntil = 0L;
+
+    /** Next tick at which we're allowed to roll a new sleep attempt (attempt-based pacing). */
+    private long nextSleepAttemptTick = 0L;
+
+    /**
+     * When >0, the mob has decided it wants to sleep.
+     * This keeps "desire" alive long enough for SleepSearchGoal to start/path.
+     */
+    private int sleepDesireTicks = 0;
+
+    /**
+     * If the allowed sleep time window flips (day<->night), we don’t insta-wake.
+     * We start a small grace timer to make waking feel natural.
+     */
+    private int timeWindowWakeGraceTicks = 0;
+
+    // --- Sleep desire API (used by SleepSearchGoal) ---
+    public boolean isSleepSearching() { return sleepSearching; }
+    public void setSleepSearching(boolean searching) { this.sleepSearching = searching; }
+
+    public boolean wantsToSleepNow() { return sleepDesireTicks > 0; }
+    protected void clearSleepDesire() { this.sleepDesireTicks = 0; }
+
+    // --- Sleep search cooldown API (used by SleepSearchGoal) ---
+    public boolean isSleepSearchOnCooldown() {
+        return !this.level().isClientSide && this.level().getGameTime() < sleepSearchCooldownUntil;
+    }
+
+    public void startSleepSearchCooldown(int ticks) {
+        sleepSearchCooldownUntil = this.level().getGameTime() + Math.max(0, ticks);
+    }
+
+    // ================================================================
+    // 8) CONSTRUCTION + SUBCLASS CONFIG HELPERS
+    // ================================================================
+
+    protected CatoBaseMob(EntityType<? extends Animal> type, Level level) {
+        super(type, level);
+    }
+
+    /** Enables temptation behavior (adds TemptGoal in registerGoals if allowed). */
     protected void setTemptItem(Ingredient ingredient) {
         this.temptItem = ingredient;
     }
 
-    /** Enables breeding behavior (adds BreedGoal + FollowParentGoal if priorities allow it) */
+    /** Enables breeding behavior (adds BreedGoal + FollowParentGoal if allowed). */
     protected void enableBreeding() {
         this.canBreed = true;
     }
 
     // ================================================================
-    // Animation / behavior hooks (subclasses override if they want)
+    // 9) ANIMATION / BEHAVIOR HOOKS (optional overrides)
     // ================================================================
 
     protected void onAttackAnimationStart(LivingEntity target) { }
@@ -272,33 +280,24 @@ public abstract class CatoBaseMob extends Animal {
     protected void onChaseStop() { }
 
     // ================================================================
-    // Sleep search cooldown
+    // 10) SLEEP HELPERS (start/wake)
     // ================================================================
 
-    public boolean isSleepSearchOnCooldown() {
-        return !this.level().isClientSide && this.level().getGameTime() < sleepSearchCooldownUntil;
-    }
-
-    public void startSleepSearchCooldown(int ticks) {
-        sleepSearchCooldownUntil = this.level().getGameTime() + Math.max(0, ticks);
-    }
-
-    // ================================================================
-    // Sleep helpers (wake/start via search)
-    // ================================================================
-
-    /** Utility: instantly wake (clears flag and timer) */
+    /** Instant wake: clears sleeping + sleep timer and enforces attempt cooldown. */
     protected void wakeUp() {
         if (isSleeping()) {
             setSleeping(false);
             sleepTicksRemaining = 0;
 
-            // Enforce cooldown before next sleep attempt
-            nextSleepAttemptTick =
-                    this.level().getGameTime() + sleepAttemptIntervalTicks();
+            // Prevent immediate re-sleep attempts right after waking.
+            nextSleepAttemptTick = this.level().getGameTime() + sleepAttemptIntervalTicks();
         }
     }
 
+    /**
+     * Called by SleepSearchGoal when the mob reached a valid roofed spot.
+     * This is the "commit to sleeping" entry point from goal logic.
+     */
     protected void beginSleepingFromGoal() {
         if (this.isSleeping()) return;
 
@@ -306,10 +305,12 @@ public abstract class CatoBaseMob extends Animal {
         if (!info.sleepEnabled()) return;
         if (this.getTarget() != null || this.isAggressive()) return;
 
-        clearSleepDesire(); // ✅ add this
+        // If we start sleeping via search, the desire should be consumed.
+        clearSleepDesire();
 
         setSleeping(true);
 
+        // Allow immediate next "extend sleep" logic; we’re actively sleeping now.
         nextSleepAttemptTick = 0L;
 
         int min = Math.max(1, info.sleepMinTicks());
@@ -320,12 +321,8 @@ public abstract class CatoBaseMob extends Animal {
         this.getNavigation().stop();
     }
 
-    // If the allowed sleep time window flips (day<->night), we don't insta-wake.
-    // We start a short grace timer so waking feels natural.
-    private int timeWindowWakeGraceTicks = 0;
-
     // ================================================================
-    // Sleep attempt pacing (server-only)
+    // 11) SLEEP ATTEMPT PACING (attempt-based, not per-tick)
     // ================================================================
 
     protected int sleepAttemptIntervalTicks() {
@@ -340,6 +337,10 @@ public abstract class CatoBaseMob extends Animal {
         return v;
     }
 
+    /**
+     * Rolls a sleep attempt at most once per interval.
+     * If it succeeds, base logic opens a desire window so search goal can run.
+     */
     protected boolean rollSleepAttempt() {
         if (this.level().isClientSide) return false;
 
@@ -351,51 +352,75 @@ public abstract class CatoBaseMob extends Animal {
     }
 
     // ================================================================
-    // Timed attack entry point + cleanup
+    // 12) TIMED ATTACK ENTRY POINT
     // ================================================================
 
+    /**
+     * Called by melee goal when we want to start an attack.
+     * We don’t deal damage now: we start timers and apply damage later.
+     */
     public boolean startTimedAttack(LivingEntity target) {
-        if (target == null || !target.isAlive()) {
-            return false;
-        }
+        if (target == null || !target.isAlive()) return false;
+        if (this.isSleeping()) return false;
 
-        if (this.isSleeping()) {
-            return false;
-        }
-
+        // Don’t restart if already attacking.
         if (this.attackTicksUntilHit > 0 || this.attackAnimTicksRemaining > 0 || this.queuedAttackTarget != null) {
             return false;
         }
 
         CatoMobSpeciesInfo info = getSpeciesInfo();
 
+        // Optional: attack only if within trigger range.
         double triggerRange = info.attackTriggerRange();
         if (triggerRange > 0.0D) {
             double maxTriggerDistSqr = triggerRange * triggerRange;
-            if (this.distanceToSqr(target) > maxTriggerDistSqr) {
-                return false;
-            }
+            if (this.distanceToSqr(target) > maxTriggerDistSqr) return false;
         }
 
+        // Commit attack
         this.queuedAttackTarget = target;
-
         this.attackAnimTicksRemaining = info.attackAnimTotalTicks();
         this.attackTicksUntilHit = info.attackHitDelayTicks();
 
         this.onAttackAnimationStart(target);
-
+        this.setAttacking(true);
         return true;
     }
 
+    /** Clears all server attack timers and the queued target. */
     protected void clearAttackState() {
         this.attackTicksUntilHit = -1;
         this.attackAnimTicksRemaining = 0;
         this.queuedAttackTarget = null;
+        this.setAttacking(false);
         this.onAttackAnimationEnd();
     }
 
     // ================================================================
-    // Goal registration (AI wiring)
+    // 12.5) MOVEMENT HOOK (shared water smoothing)
+    // ================================================================
+
+    @Override
+    public void travel(Vec3 travelVector) {
+        if (this.isInWater()) {
+            // 1) Scale horizontal input
+            double mul = this.getSpeciesInfo().waterSwimSpeedMultiplier();
+            Vec3 scaled = waterMovement().scaleHorizontalInput(travelVector, mul);
+
+            super.travel(scaled);
+
+            // 2) Dampen bobbing when idle (only if nav done)
+            if (this.getNavigation().isDone()) {
+                this.setDeltaMovement(waterMovement().dampVerticalIfIdle(this.getDeltaMovement()));
+            }
+            return;
+        }
+
+        super.travel(travelVector);
+    }
+
+    // ================================================================
+    // 13) GOAL REGISTRATION (AI wiring)
     // ================================================================
 
     @Override
@@ -403,8 +428,10 @@ public abstract class CatoBaseMob extends Animal {
         CatoMobSpeciesInfo speciesInfo = getSpeciesInfo();
         CatoGoalPriorityProfile prio = getGoalPriorities();
 
+        // Basic survival
         this.goalSelector.addGoal(prio.floatGoal, new FloatGoal(this));
 
+        // Sleep system (lock goal + optional roof search goal)
         if (prio.enableSleep && speciesInfo.sleepEnabled()) {
             this.goalSelector.addGoal(prio.sleepLock, new CatoSleepGoal(this));
 
@@ -413,23 +440,26 @@ public abstract class CatoBaseMob extends Animal {
             }
         }
 
+        // Look behavior
         if (prio.enableLookGoals) {
             this.goalSelector.addGoal(prio.lookAtPlayer,
                     new LookAtPlayerGoal(this, Player.class, 8.0F, 0.1F));
             this.goalSelector.addGoal(prio.randomLook, new RandomLookAroundGoal(this));
         }
 
+        // Tempt behavior
         if (prio.enableTempt && temptItem != null) {
-            this.goalSelector.addGoal(prio.tempt,
-                    new TemptGoal(this, 1.2D, temptItem, false));
+            this.goalSelector.addGoal(prio.tempt, new TemptGoal(this, 1.2D, temptItem, false));
         }
 
+        // Temperament -> combat setup
         switch (speciesInfo.temperament()) {
             case PASSIVE -> setupPassiveGoals();
             case NEUTRAL_RETALIATE_SHORT, NEUTRAL_RETALIATE_LONG -> setupNeutralGoals();
             case HOSTILE -> setupHostileGoals();
         }
 
+        // Movement type -> wander setup
         if (prio.enableWander) {
             switch (speciesInfo.movementType()) {
                 case LAND -> setupLandGoals();
@@ -440,6 +470,7 @@ public abstract class CatoBaseMob extends Animal {
             }
         }
 
+        // Breeding
         if (prio.enableBreeding && canBreed) {
             this.goalSelector.addGoal(prio.breed, new BreedGoal(this, 1.0D));
             this.goalSelector.addGoal(prio.followParent, new FollowParentGoal(this, 1.1D));
@@ -475,10 +506,10 @@ public abstract class CatoBaseMob extends Animal {
         int cooldown = getSpeciesInfo().attackCooldownTicks();
         CatoGoalPriorityProfile prio = getGoalPriorities();
 
-        this.goalSelector.addGoal(
-                prio.meleeAttack,
-                new CatoMeleeAttackGoal(this, 1.1D, true, cooldown)
-        );
+        // Keeps retaliation target behavior more “vanilla stable”
+        this.targetSelector.addGoal(prio.targetHurtBy, new HurtByTargetGoal(this));
+
+        this.goalSelector.addGoal(prio.meleeAttack, new CatoMeleeAttackGoal(this, 1.1D, true, cooldown));
     }
 
     protected void setupHostileGoals() {
@@ -489,24 +520,23 @@ public abstract class CatoBaseMob extends Animal {
         this.targetSelector.addGoal(prio.targetNearestPlayer,
                 new NearestAttackableTargetGoal<>(this, Player.class, true));
 
-        this.goalSelector.addGoal(
-                prio.meleeAttack,
-                new CatoMeleeAttackGoal(this, 1.2D, false, cooldown)
-        );
+        this.goalSelector.addGoal(prio.meleeAttack, new CatoMeleeAttackGoal(this, 1.2D, false, cooldown));
     }
 
     // ================================================================
-    // Retaliation hook: get angry when hurt
+    // 14) DAMAGE HOOK -> WAKE + SET ANGER STATE
     // ================================================================
 
     @Override
     public boolean hurt(DamageSource source, float amount) {
+        // Wake on damage if species wants that behavior
         if (!this.level().isClientSide && getSpeciesInfo().wakeOnDamage()) {
             wakeUp();
         }
 
         boolean result = super.hurt(source, amount);
 
+        // Retaliation / anger setup after taking damage
         if (!level().isClientSide && result) {
             CatoMobTemperament temperament = getSpeciesInfo().temperament();
 
@@ -538,13 +568,18 @@ public abstract class CatoBaseMob extends Animal {
         return result;
     }
 
-// ================================================================
-// Sleep ticking (server-only behavior state machine)
-// ================================================================
+    // ================================================================
+    // 15) SLEEP TICK (server-side state machine)
+    // ================================================================
 
+    /**
+     * Server-only sleep state machine.
+     * Called from aiStep() every tick.
+     */
     protected void tickSleepServer() {
         CatoMobSpeciesInfo info = getSpeciesInfo();
 
+        // If sleeping is disabled: force clear state.
         if (!info.sleepEnabled()) {
             clearSleepDesire();
             if (isSleeping()) {
@@ -555,37 +590,30 @@ public abstract class CatoBaseMob extends Animal {
             return;
         }
 
-        // ============================================================
-        // Currently sleeping -> maintain / wake checks
-        // ============================================================
+        // ------------------------------------------------------------
+        // A) CURRENTLY SLEEPING
+        // ------------------------------------------------------------
         if (isSleeping()) {
             if (sleepTicksRemaining > 0) sleepTicksRemaining--;
 
             boolean shouldWake = false;
 
+            // Hard wake conditions
             if (this.getTarget() != null || this.isAggressive()) shouldWake = true;
             if (!this.getNavigation().isDone()) shouldWake = true;
             if (info.wakeOnAir() && !this.onGround()) shouldWake = true;
 
             if (info.wakeOnTouchingWater() && this.isInWater()) {
-                if (!info.sleepAllowedOnWaterSurface()) {
-                    shouldWake = true;
-                }
+                if (!info.sleepAllowedOnWaterSurface()) shouldWake = true;
             }
 
-            if (info.wakeOnUnderwater() && this.isUnderWater()) {
-                shouldWake = true;
-            }
+            if (info.wakeOnUnderwater() && this.isUnderWater()) shouldWake = true;
 
             if (info.wakeOnSunlight()) {
-                if (this.level().isDay() && this.level().canSeeSky(this.blockPosition())) {
-                    shouldWake = true;
-                }
+                if (this.level().isDay() && this.level().canSeeSky(this.blockPosition())) shouldWake = true;
             }
 
-            // ------------------------------------------------------------
-            // Time window changed (day/night flips) -> grace nap then wake
-            // ------------------------------------------------------------
+            // Time window flip handling (day<->night): grace nap then wake
             boolean isDayNow = this.level().isDay();
             boolean allowedTimeNow = (isDayNow && info.sleepAtDay()) || (!isDayNow && info.sleepAtNight());
 
@@ -597,15 +625,14 @@ public abstract class CatoBaseMob extends Animal {
                         timeWindowWakeGraceTicks = gMin + this.getRandom().nextInt(gMax - gMin + 1);
                     } else {
                         timeWindowWakeGraceTicks--;
-                        if (timeWindowWakeGraceTicks <= 0) {
-                            shouldWake = true;
-                        }
+                        if (timeWindowWakeGraceTicks <= 0) shouldWake = true;
                     }
                 } else {
                     timeWindowWakeGraceTicks = 0;
                 }
             }
 
+            // If sleep timer ended: maybe extend, else wake.
             if (!shouldWake && sleepTicksRemaining <= 0) {
                 float c = info.sleepContinueChance();
                 if (c < 0f) c = 0f;
@@ -621,6 +648,7 @@ public abstract class CatoBaseMob extends Animal {
                 }
             }
 
+            // Perform wake
             if (shouldWake) {
                 setSleeping(false);
                 sleepTicksRemaining = 0;
@@ -633,45 +661,43 @@ public abstract class CatoBaseMob extends Animal {
             return;
         }
 
-        // ============================================================
-        // Not currently sleeping -> decide / search / sleep
-        // ============================================================
+        // ------------------------------------------------------------
+        // B) NOT SLEEPING: decide/search/sleep
+        // ------------------------------------------------------------
 
+        // If search goal is already running, base logic stays out of the way.
         if (this.isSleepSearching()) return;
+
+        // No sleeping while in combat
         if (this.getTarget() != null || this.isAggressive()) return;
 
-        // Can't sleep if in bad physical state (unless surface-sleep is allowed)
+        // Physical constraints
         if (!this.onGround() && !info.sleepAllowedOnWaterSurface()) return;
         if (this.isInWater() && !info.sleepAllowedOnWaterSurface()) return;
-
-        // Surface-sleepers should not sleep while fully underwater
         if (this.isUnderWater() && info.sleepAllowedOnWaterSurface()) return;
 
+        // Time window constraint
         boolean isDay = this.level().isDay();
         boolean allowedTime = (isDay && info.sleepAtDay()) || (!isDay && info.sleepAtNight());
         if (!allowedTime) return;
 
-        // ------------------------------------------------------------
-        // Single authoritative "want to sleep" decision:
-        // - If we already want to sleep (desire window), don't re-roll.
-        // - Otherwise roll once, and if success, open a short desire window.
-        // ------------------------------------------------------------
+        // Single authoritative “want to sleep” decision:
         boolean wantsToSleep = (sleepDesireTicks > 0) || rollSleepAttempt();
         if (!wantsToSleep) return;
 
-        // Keep desire alive briefly so SleepSearchGoal has time to start/path
+        // Keep desire alive briefly so SleepSearchGoal has time to start/path.
         int desireWindow = Math.max(1, info.sleepDesireWindowTicks());
         sleepDesireTicks = Math.max(sleepDesireTicks, desireWindow);
 
-        // If roof required but not roofed here -> wait for SleepSearchGoal
+        // If roof required but not roofed here: wait for SleepSearchGoal to move us.
         if (info.sleepRequiresRoof()) {
             int roofMax = Math.max(1, info.sleepSearchCeilingScanMaxBlocks());
             if (!this.isRoofed(this.blockPosition(), roofMax)) {
-                return; // desire remains, search goal canUse() should pick it up
+                return; // desire remains so search goal canUse() picks it up
             }
         }
 
-        // If we got here: roof not required OR already roofed -> sleep in place
+        // Roof not required OR already roofed -> sleep in place
         this.getNavigation().stop();
         this.setDeltaMovement(this.getDeltaMovement().multiply(0.0D, 1.0D, 0.0D));
 
@@ -685,7 +711,11 @@ public abstract class CatoBaseMob extends Animal {
         sleepTicksRemaining = min + this.getRandom().nextInt(max - min + 1);
     }
 
-    /** @return distance in blocks to the first non-air, non-fluid block above pos; -1 if none within maxHeight */
+    // ================================================================
+    // 16) ROOF HELPERS (used by sleep + sleep search goal)
+    // ================================================================
+
+    /** @return distance to first non-air, non-fluid block above pos; -1 if none within maxHeight */
     protected int roofDistance(BlockPos pos, int maxHeight) {
         Level level = this.level();
         for (int dy = 1; dy <= maxHeight; dy++) {
@@ -704,24 +734,15 @@ public abstract class CatoBaseMob extends Animal {
         return roofDistance(pos, maxHeight) != -1;
     }
 
-    // When > 0, the mob has decided it wants to sleep and will allow SleepSearchGoal to run.
-    private int sleepDesireTicks = 0;
-
-    public boolean wantsToSleepNow() { return sleepDesireTicks > 0; }
-
-    protected void clearSleepDesire() {
-        this.sleepDesireTicks = 0;
-    }
-
     // ================================================================
-    // Sleep spot memory (server-only): ring buffer + strike system
+    // 17) SLEEP SPOT MEMORY (used by SleepSearchGoal)
     // ================================================================
 
-    private static final int MAX_SLEEP_SPOT_MEMORY = 6; // N=3–8 recommended
+    // Defaults for “reasonable memory”; actual size/strikes are species-driven.
+    private static final int MAX_SLEEP_SPOT_MEMORY = 6;
     private static final int MAX_SLEEP_SPOT_STRIKES = 2;
 
-    private final java.util.Deque<SleepSpotMemory> rememberedSleepSpots =
-            new java.util.ArrayDeque<>();
+    private final Deque<SleepSpotMemory> rememberedSleepSpots = new ArrayDeque<>();
 
     public static final class SleepSpotMemory {
         public final BlockPos pos;
@@ -749,8 +770,8 @@ public abstract class CatoBaseMob extends Animal {
 
         BlockPos p = pos.immutable();
 
-        // If already present: reset strikes and move to the end (most-recent)
-        for (var it = rememberedSleepSpots.iterator(); it.hasNext(); ) {
+        // If already present: reset strikes and move to end (most-recent)
+        for (var it = rememberedSleepSpots.iterator(); it.hasNext();) {
             SleepSpotMemory mem = it.next();
             if (mem.pos.equals(p)) {
                 it.remove();
@@ -760,7 +781,7 @@ public abstract class CatoBaseMob extends Animal {
             }
         }
 
-        // Enforce ring buffer size (species-defined)
+        // Enforce ring buffer size
         while (rememberedSleepSpots.size() >= max) {
             rememberedSleepSpots.removeFirst();
         }
@@ -768,16 +789,16 @@ public abstract class CatoBaseMob extends Animal {
         rememberedSleepSpots.addLast(new SleepSpotMemory(p));
     }
 
-    /** Returns a stable snapshot list (FIFO order: oldest -> newest). */
-    public java.util.List<SleepSpotMemory> getRememberedSleepSpots() {
-        return java.util.List.copyOf(rememberedSleepSpots);
+    /** Snapshot list: FIFO (oldest -> newest). */
+    public List<SleepSpotMemory> getRememberedSleepSpots() {
+        return List.copyOf(rememberedSleepSpots);
     }
 
-    /** Add a strike on failure; delete only after MAX_SLEEP_SPOT_STRIKES. */
+    /** Adds a strike; deletes only after max strikes reached. */
     public void strikeSleepSpot(BlockPos pos) {
         if (pos == null) return;
 
-        for (var it = rememberedSleepSpots.iterator(); it.hasNext(); ) {
+        for (var it = rememberedSleepSpots.iterator(); it.hasNext();) {
             SleepSpotMemory mem = it.next();
             BlockPos p = pos.immutable();
             if (mem.pos.equals(p)) {
@@ -791,7 +812,7 @@ public abstract class CatoBaseMob extends Animal {
     }
 
     // ================================================================
-    // Main AI step (server-side behavior + timed attack damage)
+    // 18) MAIN SERVER TICK (sleep + anger + timed attack damage)
     // ================================================================
 
     @Override
@@ -800,19 +821,20 @@ public abstract class CatoBaseMob extends Animal {
 
         if (!level().isClientSide) {
 
-            // ------------------------------------------------------------
-            // NEW: decrement sleep desire timer (server-only)
-            // ------------------------------------------------------------
+            // Decrement desire window (server-only)
             if (sleepDesireTicks > 0) {
                 sleepDesireTicks--;
             }
 
+            // Capture home position once if species uses home radius behavior
             if (this.homePos == null && this.shouldStayWithinHomeRadius()) {
                 this.homePos = this.blockPosition();
             }
 
+            // Sleep system
             tickSleepServer();
 
+            // While sleeping: no combat logic should run
             if (this.isSleeping()) {
                 clearAttackState();
                 this.setTarget(null);
@@ -821,22 +843,31 @@ public abstract class CatoBaseMob extends Animal {
                 return;
             }
 
+            // Anger countdown and cleanup
             if (angerTime > 0) {
                 angerTime--;
             } else if (getTarget() != null) {
                 this.setTarget(null);
                 this.setAggressive(false);
                 this.setLastHurtByMob(null);
+
+                // stop leftover chase path
+                this.getNavigation().stop();
+                this.setMoveMode(MOVE_IDLE);
+
                 clearAttackState();
             }
 
+            // Sync "visual angry" to clients
             boolean angryNow = (this.angerTime > 0 && this.getTarget() != null);
             this.setVisuallyAngry(angryNow);
 
+            // If target is gone, don’t keep attack timers running
             if (this.getTarget() == null && (this.attackTicksUntilHit > 0 || this.attackAnimTicksRemaining > 0)) {
                 clearAttackState();
             }
 
+            // Deal timed hit
             if (this.attackTicksUntilHit > 0) {
                 this.attackTicksUntilHit--;
 
@@ -852,18 +883,23 @@ public abstract class CatoBaseMob extends Animal {
                         }
                     }
 
+                    // Consume queued target after hit attempt
                     this.queuedAttackTarget = null;
                 }
             }
 
+            // Track attack animation duration
             if (this.attackAnimTicksRemaining > 0) {
                 this.attackAnimTicksRemaining--;
 
                 if (this.attackAnimTicksRemaining == 0) {
+                    // IMPORTANT: stop "attacking" flag so GeckoLib returns to idle/walk/run
+                    this.setAttacking(false);
                     this.onAttackAnimationEnd();
                 }
             }
 
+            // While angry: force look-at target (clamped by max head rot)
             if (this.angerTime > 0 && this.getTarget() != null) {
                 int maxYaw = this.getMaxHeadYRot();
                 int maxPitch = this.getMaxHeadXRot();
@@ -876,7 +912,7 @@ public abstract class CatoBaseMob extends Animal {
     }
 
     // ================================================================
-    // Shared attribute factory (used when registering entity attributes)
+    // 19) ATTRIBUTES (used by your entity registration)
     // ================================================================
 
     public static AttributeSupplier.Builder createAttributesFor(CatoMobSpeciesInfo info) {
@@ -889,7 +925,7 @@ public abstract class CatoBaseMob extends Animal {
     }
 
     // ================================================================
-    // Food / breeding (base stubs; subclasses usually override)
+    // 20) FOOD / BREEDING STUBS (subclasses usually override)
     // ================================================================
 
     @Override

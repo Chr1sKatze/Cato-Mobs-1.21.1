@@ -3,6 +3,7 @@ package com.chriskatze.catomobs;
 import com.chriskatze.catomobs.client.render.PikachuMaleRenderer;
 import com.chriskatze.catomobs.entity.PikachuMaleMob;
 import com.chriskatze.catomobs.entity.base.CatoBaseMob;
+import com.chriskatze.catomobs.network.CMNetwork;
 import com.chriskatze.catomobs.registry.CMEntities;
 import com.chriskatze.catomobs.registry.CMItems;
 import com.mojang.logging.LogUtils;
@@ -58,6 +59,11 @@ public class CatoMobs {
         // Mod lifecycle listeners (common)
         // ------------------------------------------------------------
         modEventBus.addListener(this::commonSetup);
+
+        // ------------------------------------------------------------
+        // Network
+        // ------------------------------------------------------------
+        modEventBus.addListener(CMNetwork::registerPayloads);
 
         // ------------------------------------------------------------
         // Deferred registers

@@ -35,6 +35,22 @@ public record CatoMobSpeciesInfo(
         int attackAnimTotalTicks,
         int attackHitDelayTicks,
 
+        /**
+         * Navigation speed modifier used while chasing a target (melee goal).
+         * This is the "speed" value passed into Navigation#moveTo(..., speed).
+         *
+         * Actual in-game movement will still be influenced by the vanilla movementSpeed attribute,
+         * but this controls how aggressively the mob chases.
+         */
+        double chaseSpeedModifier,
+
+        /**
+         * NEW:
+         * If false: root during attack animation (no chasing movement while isAttacking() is true).
+         * If true: allow navigation to keep updating while the attack animation plays.
+         */
+        boolean moveDuringAttackAnimation,
+
         // ================================================================
         // 4) WANDER / MOVEMENT (goal tuning)
         // ================================================================
@@ -58,8 +74,6 @@ public record CatoMobSpeciesInfo(
         /**
          * Water movement “feel” configuration for travel().
          * Used by WaterMovementComponent.
-         *
-         * Tip: keep defaults sane for land mobs and tune per species.
          */
         WaterMovementConfig waterMovement,
 
@@ -134,12 +148,10 @@ public record CatoMobSpeciesInfo(
             double verticalSpeedClamp,
             double dampingApplyThreshold
     ) {
-        /** Safe canonical "off" config (prevents accidental math doing anything). */
         public static WaterMovementConfig disabled() {
             return new WaterMovementConfig(false, 1.0D, 0.0D, 0.0D);
         }
 
-        /** Handy default that matches your previous Pikachu tuning. */
         public static WaterMovementConfig defaultLandDamping() {
             return new WaterMovementConfig(true, 0.7D, 0.4D, 0.2D);
         }

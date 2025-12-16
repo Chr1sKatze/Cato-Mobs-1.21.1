@@ -90,12 +90,12 @@ public class CatoGoalPriorityProfile {
     /**
      * Cosmetic look-at-player. Usually above random look, but below sleep.
      */
-    public int lookAtPlayer = 3;
+    public int lookAtPlayer = 11;
 
     /**
      * Cosmetic random head movement (idle scanning).
      */
-    public int randomLook = 4;
+    public int randomLook = 10;
 
     /**
      * TemptGoal: "follow the player holding X item".
@@ -107,7 +107,7 @@ public class CatoGoalPriorityProfile {
      * Melee attack/chase behavior.
      * Depending on your design you might set this even higher than tempt.
      */
-    public int meleeAttack = 6;
+    public int meleeAttack = 3;
 
     /**
      * Breeding behaviors.
@@ -123,7 +123,7 @@ public class CatoGoalPriorityProfile {
     /**
      * Default idle movement should be low priority so it loses to most other goals.
      */
-    public int wander = 10;
+    public int wander = 9;
 
     // ------------------------------------------------------------
     // targetSelector priorities (target acquisition / hostility)

@@ -38,6 +38,11 @@ public final class CatoMobSpeciesInfoBuilder {
     private int attackAnimTotalTicks = 20;
     private int attackHitDelayTicks = 10;
 
+    private double chaseSpeedModifier = 1.1D;
+
+    /** NEW: allow movement during attack animation window */
+    private boolean moveDuringAttackAnimation = false;
+
     // -----------------------------
     // 4) Wander / movement
     // -----------------------------
@@ -56,10 +61,6 @@ public final class CatoMobSpeciesInfoBuilder {
     // -----------------------------
     private double waterSwimSpeedMultiplier = 1.0D;
 
-    /**
-     * Per-species water movement "feel" config used by WaterMovementComponent.
-     * Default: OFF (so land mobs don't damp unless you enable it).
-     */
     private CatoMobSpeciesInfo.WaterMovementConfig waterMovement =
             CatoMobSpeciesInfo.WaterMovementConfig.disabled();
 
@@ -161,6 +162,17 @@ public final class CatoMobSpeciesInfoBuilder {
         this.attackCooldownTicks = cooldownTicks;
         this.attackAnimTotalTicks = animTotalTicks;
         this.attackHitDelayTicks = hitDelayTicks;
+        return this;
+    }
+
+    public CatoMobSpeciesInfoBuilder chaseSpeed(double modifier) {
+        this.chaseSpeedModifier = modifier;
+        return this;
+    }
+
+    /** NEW */
+    public CatoMobSpeciesInfoBuilder moveDuringAttackAnimation(boolean allowMove) {
+        this.moveDuringAttackAnimation = allowMove;
         return this;
     }
 
@@ -293,7 +305,6 @@ public final class CatoMobSpeciesInfoBuilder {
     // Build with basic safety
     // ================================================================
     public CatoMobSpeciesInfo build() {
-        // Clamp/validate common mistakes
         float attemptChance = clamp01(this.sleepAttemptChance);
         float continueChance = clamp01(this.sleepContinueChance);
         float runChance = clamp01(this.wanderRunChance);
@@ -321,7 +332,8 @@ public final class CatoMobSpeciesInfoBuilder {
 
         double waterMul = (this.waterSwimSpeedMultiplier <= 0.0D) ? 1.0D : this.waterSwimSpeedMultiplier;
 
-        // Normalize + clamp water config
+        double chaseMod = Math.max(0.05D, this.chaseSpeedModifier);
+
         CatoMobSpeciesInfo.WaterMovementConfig wmIn =
                 (this.waterMovement == null) ? CatoMobSpeciesInfo.WaterMovementConfig.disabled() : this.waterMovement;
 
@@ -335,7 +347,6 @@ public final class CatoMobSpeciesInfoBuilder {
             waterMovementSafe = new CatoMobSpeciesInfo.WaterMovementConfig(true, damping, clamp, thresh);
         }
 
-        // If buddies are disabled, normalize buddy config so you don't accidentally waste cycles.
         boolean preferBuddies = this.sleepPreferSleepingBuddies
                 && this.sleepBuddySearchRadius > 0.0D
                 && this.sleepBuddyMaxCount > 0
@@ -361,6 +372,8 @@ public final class CatoMobSpeciesInfoBuilder {
                 Math.max(0, attackCooldownTicks),
                 Math.max(1, attackAnimTotalTicks),
                 Math.max(0, attackHitDelayTicks),
+                chaseMod,
+                this.moveDuringAttackAnimation,
 
                 // 4) Wander
                 Math.max(0.0D, wanderWalkSpeed),

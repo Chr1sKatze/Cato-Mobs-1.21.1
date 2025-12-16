@@ -3,8 +3,15 @@ package com.chriskatze.catomobs.client.render;
 import com.chriskatze.catomobs.client.model.PikachuMaleModel;
 import com.chriskatze.catomobs.entity.PikachuMaleMob;
 import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.math.Axis;
+import net.minecraft.ChatFormatting;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Font;
+import net.minecraft.client.renderer.LightTexture;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.entity.EntityRendererProvider;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
 import software.bernie.geckolib.renderer.GeoEntityRenderer;
 
 /**
@@ -82,5 +89,77 @@ public class PikachuMaleRenderer extends GeoEntityRenderer<PikachuMaleMob> {
 
         // Render using GeckoLib's renderer (handles bones, animations, textures, etc.)
         super.render(entity, entityYaw, partialTicks, poseStack, bufferSource, packedLight);
+        // Draw AI debug overlay (client-only)
+        renderAiDebug(entity, poseStack, bufferSource, packedLight);
     }
+
+    private void renderAiDebug(PikachuMaleMob entity,
+                               PoseStack poseStack,
+                               MultiBufferSource bufferSource,
+                               int packedLight) {
+
+        if (!entity.isAiDebugEnabled()) return;
+
+        String text = entity.getAiDebugText();
+        if (text == null || text.isBlank()) return;
+
+        Font font = Minecraft.getInstance().font;
+
+        // Lift above head
+        float y = entity.getBbHeight() + 0.55f;
+
+        poseStack.pushPose();
+        poseStack.translate(0.0D, y, 0.0D);
+
+        // Face camera
+        var cam = Minecraft.getInstance().getEntityRenderDispatcher().cameraOrientation();
+        poseStack.mulPose(cam);
+        poseStack.mulPose(Axis.YP.rotationDegrees(180.0F));
+
+        // flip upright without negative scale (no culling)
+        poseStack.mulPose(Axis.ZP.rotationDegrees(180.0F));
+
+        // Scale down to name-tag style
+        float scale = 0.025F;
+        poseStack.scale(scale, scale, scale);
+
+        String[] lines = text.split("\n");
+
+        // Simple layout: stack upwards
+        int lineHeight = font.lineHeight;
+        int totalHeight = lines.length * lineHeight;
+        int yStart = -totalHeight;
+
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i];
+
+            // Color convention from snapshot builder:
+            // [G] = active (green), [R] = inactive (red)
+            ChatFormatting color = ChatFormatting.WHITE;
+            if (line.startsWith("[G]")) color = ChatFormatting.GREEN;
+            else if (line.startsWith("[R]")) color = ChatFormatting.RED;
+
+            MutableComponent comp = Component.literal(line).withStyle(color);
+
+            float x = -font.width(comp) / 2.0f;
+            float yy = yStart + i * lineHeight;
+
+            // draw
+            font.drawInBatch(
+                    comp,
+                    x,
+                    yy,
+                    0xFFFFFFFF,
+                    false,
+                    poseStack.last().pose(),
+                    bufferSource,
+                    Font.DisplayMode.NORMAL,
+                    0,
+                    LightTexture.FULL_BRIGHT
+            );
+        }
+
+        poseStack.popPose();
+    }
+
 }

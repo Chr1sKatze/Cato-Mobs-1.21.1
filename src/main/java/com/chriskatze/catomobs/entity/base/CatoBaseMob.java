@@ -25,9 +25,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.ArrayDeque;
-import java.util.Deque;
-import java.util.List;
+import java.util.*;
 
 /**
  * CatoBaseMob
@@ -147,6 +145,14 @@ public abstract class CatoBaseMob extends Animal {
     private static final EntityDataAccessor<Boolean> DATA_ATTACKING =
             SynchedEntityData.defineId(CatoBaseMob.class, EntityDataSerializers.BOOLEAN);
 
+    /** Debug overlay toggle (synced). */
+    private static final EntityDataAccessor<Boolean> DATA_DEBUG_AI =
+            SynchedEntityData.defineId(CatoBaseMob.class, EntityDataSerializers.BOOLEAN);
+
+    /** Debug overlay payload (synced, newline-separated). */
+    private static final EntityDataAccessor<String> DATA_DEBUG_AI_TEXT =
+            SynchedEntityData.defineId(CatoBaseMob.class, EntityDataSerializers.STRING);
+
     @Override
     protected void defineSynchedData(SynchedEntityData.Builder builder) {
         super.defineSynchedData(builder);
@@ -154,6 +160,8 @@ public abstract class CatoBaseMob extends Animal {
         builder.define(DATA_ATTACKING, false);
         builder.define(DATA_VISUALLY_ANGRY, false);
         builder.define(DATA_SLEEPING, false);
+        builder.define(DATA_DEBUG_AI, false);
+        builder.define(DATA_DEBUG_AI_TEXT, "");
     }
 
     // --- Synced accessors ---
@@ -169,6 +177,164 @@ public abstract class CatoBaseMob extends Animal {
 
     public boolean isVisuallyAngry() { return this.entityData.get(DATA_VISUALLY_ANGRY); }
     protected void setVisuallyAngry(boolean angry) { this.entityData.set(DATA_VISUALLY_ANGRY, angry); }
+
+    public boolean isAiDebugEnabled() {return this.entityData.get(DATA_DEBUG_AI); }
+
+    public void setAiDebugEnabled(boolean enabled) { this.entityData.set(DATA_DEBUG_AI, enabled);
+        if (!enabled) { this.entityData.set(DATA_DEBUG_AI_TEXT, ""); }}
+
+    public String getAiDebugText() { return this.entityData.get(DATA_DEBUG_AI_TEXT); }
+
+    // --- Server-Side snapshot ---
+
+    private int debugAiTickCooldown = 0;
+
+    private void tickAiDebugServer() {
+        if (!isAiDebugEnabled()) return;
+
+        // throttle: update 5x per second (every 4 ticks)
+        if (debugAiTickCooldown-- > 0) return;
+        debugAiTickCooldown = 4;
+
+        String text = buildAiDebugSnapshot();
+        this.entityData.set(DATA_DEBUG_AI_TEXT, text);
+    }
+
+    private String buildAiDebugSnapshot() {
+        LivingEntity t = this.getTarget();
+
+        String targetStr = (t == null)
+                ? "none"
+                : (t.getType().toShortString() + " @" + t.blockPosition().toShortString());
+
+        String navStr = "nav=" + (this.getNavigation().isInProgress() ? "IN_PROGRESS"
+                : (this.getNavigation().isDone() ? "DONE" : "OTHER"));
+
+        String top =
+                "AI DEBUG" +
+                        "\nstate: sleep=" + isSleeping() +
+                        " angryTime=" + this.angerTime +
+                        " aggressive=" + this.isAggressive() +
+                        " visuallyAngry=" + this.isVisuallyAngry() +
+                        "\nmoveMode=" + this.getMoveMode() +
+                        " attacking=" + this.isAttacking() +
+                        " hitIn=" + this.attackTicksUntilHit +
+                        " animLeft=" + this.attackAnimTicksRemaining +
+                        "\n" + navStr +
+                        "\ntarget=" + targetStr;
+
+        // Goals list (goalSelector + targetSelector)
+        ArrayList<String> lines = new ArrayList<>();
+        lines.add(top);
+        lines.add("--------------------------------");
+
+        lines.add("GOALS (action):");
+        lines.addAll(dumpGoalsSafe(this.goalSelector));
+
+        lines.add("--------------------------------");
+        lines.add("GOALS (target):");
+        lines.addAll(dumpGoalsSafe(this.targetSelector));
+
+        return String.join("\n", lines);
+    }
+
+    /**
+     * Tries to dump goals without depending on one specific Mojang mapping.
+     * Uses reflection as a debug-only fallback (because GoalSelector internals changed across versions).
+     *
+     * Output format:
+     *   "[G]  6 CatoMeleeAttackGoal"
+     *   "[R] 10 CatoWanderGoal"
+     */
+    @SuppressWarnings("unchecked")
+    private List<String> dumpGoalsSafe(GoalSelector selector) {
+        try {
+            // 1) Best case: GoalSelector has getAvailableGoals()
+            // Many versions expose this; if your environment has it, this path is clean.
+            var m = selector.getClass().getMethod("getAvailableGoals");
+            Object result = m.invoke(selector);
+            if (result instanceof Set<?> set) {
+                return dumpWrappedGoalSet(set);
+            }
+        } catch (Throwable ignored) { }
+
+        try {
+            // 2) Reflection fallback: find a Set field that looks like the internal "availableGoals"
+            for (var f : selector.getClass().getDeclaredFields()) {
+                if (!Set.class.isAssignableFrom(f.getType())) continue;
+                f.setAccessible(true);
+                Object val = f.get(selector);
+                if (val instanceof Set<?> set && !set.isEmpty()) {
+                    // We assume this is the wrapped goals set.
+                    return dumpWrappedGoalSet(set);
+                }
+            }
+        } catch (Throwable ignored) { }
+
+        return List.of("(could not inspect goals on this build)");
+    }
+
+    private List<String> dumpWrappedGoalSet(Set<?> wrappedGoalSet) {
+        record GoalLine(int prio, boolean running, String name) {}
+
+        ArrayList<GoalLine> tmp = new ArrayList<>();
+
+        for (Object w : wrappedGoalSet) {
+            try {
+                // WrappedGoal-like object:
+                // - getPriority() or priority field
+                // - isRunning() or isRunning field
+                // - getGoal() returns Goal
+                int prio = 0;
+                boolean running = false;
+                Goal goal = null;
+
+                // priority
+                try {
+                    var mp = w.getClass().getMethod("getPriority");
+                    prio = (int) mp.invoke(w);
+                } catch (Throwable ignored) {
+                    var fp = w.getClass().getDeclaredField("priority");
+                    fp.setAccessible(true);
+                    prio = (int) fp.get(w);
+                }
+
+                // running
+                try {
+                    var mr = w.getClass().getMethod("isRunning");
+                    running = (boolean) mr.invoke(w);
+                } catch (Throwable ignored) {
+                    var fr = w.getClass().getDeclaredField("isRunning");
+                    fr.setAccessible(true);
+                    running = (boolean) fr.get(w);
+                }
+
+                // goal
+                try {
+                    var mg = w.getClass().getMethod("getGoal");
+                    goal = (Goal) mg.invoke(w);
+                } catch (Throwable ignored) {
+                    var fg = w.getClass().getDeclaredField("goal");
+                    fg.setAccessible(true);
+                    goal = (Goal) fg.get(w);
+                }
+
+                String name = (goal == null) ? w.getClass().getSimpleName() : goal.getClass().getSimpleName();
+                tmp.add(new GoalLine(prio, running, name));
+            } catch (Throwable ignored) {
+                // skip broken entries
+            }
+        }
+
+        tmp.sort(Comparator.comparingInt(GoalLine::prio));
+
+        ArrayList<String> out = new ArrayList<>();
+        for (GoalLine gl : tmp) {
+            out.add((gl.running ? "[G] " : "[R] ") + String.format("%2d ", gl.prio) + gl.name);
+        }
+        if (out.isEmpty()) out.add("(no goals found)");
+        return out;
+    }
 
     // ================================================================
     // 5) AGGRESSION / RETALIATION (server-side)
@@ -504,23 +670,27 @@ public abstract class CatoBaseMob extends Animal {
 
     protected void setupNeutralGoals() {
         int cooldown = getSpeciesInfo().attackCooldownTicks();
+        double chaseSpeed = getSpeciesInfo().chaseSpeedModifier();
         CatoGoalPriorityProfile prio = getGoalPriorities();
 
         // Keeps retaliation target behavior more “vanilla stable”
         this.targetSelector.addGoal(prio.targetHurtBy, new HurtByTargetGoal(this));
 
-        this.goalSelector.addGoal(prio.meleeAttack, new CatoMeleeAttackGoal(this, 1.1D, true, cooldown));
+        this.goalSelector.addGoal(prio.meleeAttack, new CatoMeleeAttackGoal(this, chaseSpeed, true, cooldown));
+
     }
 
     protected void setupHostileGoals() {
         int cooldown = getSpeciesInfo().attackCooldownTicks();
+        double chaseSpeed = getSpeciesInfo().chaseSpeedModifier();
         CatoGoalPriorityProfile prio = getGoalPriorities();
 
         this.targetSelector.addGoal(prio.targetHurtBy, new HurtByTargetGoal(this));
         this.targetSelector.addGoal(prio.targetNearestPlayer,
                 new NearestAttackableTargetGoal<>(this, Player.class, true));
 
-        this.goalSelector.addGoal(prio.meleeAttack, new CatoMeleeAttackGoal(this, 1.2D, false, cooldown));
+        this.goalSelector.addGoal(prio.meleeAttack, new CatoMeleeAttackGoal(this, chaseSpeed, false, cooldown));
+
     }
 
     // ================================================================
@@ -840,6 +1010,8 @@ public abstract class CatoBaseMob extends Animal {
                 this.setTarget(null);
                 this.setLastHurtByMob(null);
                 this.setAggressive(false);
+                // keep debug updating even while sleeping
+                tickAiDebugServer();
                 return;
             }
 
@@ -908,6 +1080,8 @@ public abstract class CatoBaseMob extends Animal {
                     this.getLookControl().setLookAt(this.getTarget(), (float) maxYaw, (float) maxPitch);
                 }
             }
+            // Debug overlay snapshot
+            tickAiDebugServer();
         }
     }
 

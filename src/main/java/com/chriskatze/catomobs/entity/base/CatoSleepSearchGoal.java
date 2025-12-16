@@ -75,7 +75,7 @@ public class CatoSleepSearchGoal extends Goal {
         this.targetPos = SleepSpotFinder.findRoofedSleepSpot(mob, info);
 
         if (this.targetPos == null) {
-            mob.clearSleepDesire();
+            // couldn't find a candidate this pass; retry later *within the desire episode*
             mob.startSleepSearchCooldown(info.sleepSearchCooldownTicks());
             return false;
         }

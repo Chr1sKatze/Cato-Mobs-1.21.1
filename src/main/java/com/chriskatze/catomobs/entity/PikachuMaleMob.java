@@ -39,7 +39,9 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
                             CatoMobSizeCategory.SMALL
                     )
                     .core(8.0D, 1.0D, 0.30D, 16.0D, 0.08D)
-                    .combat(3.0D, 3.0D, 70, 60, 30)
+                    .combat(1.0D, 4.0D, 70, 60, 30)
+                    .chaseSpeed(1.60D)
+                    .moveDuringAttackAnimation(false)
                     .wander(1.0D, 1.35D, 0.25F, 3.0D, 32.0D)
                     .home(true, 96.0D)
                     .wanderRunDistanceThreshold(16.0D)

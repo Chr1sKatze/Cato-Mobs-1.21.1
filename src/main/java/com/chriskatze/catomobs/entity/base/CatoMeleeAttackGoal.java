@@ -2,10 +2,10 @@ package com.chriskatze.catomobs.entity.base;
 
 import com.chriskatze.catomobs.entity.CatoMobSpeciesInfo;
 import com.chriskatze.catomobs.entity.CatoMobTemperament;
+import net.minecraft.world.entity.EntitySelector;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.entity.EntitySelector;
 
 import java.util.EnumSet;
 
@@ -107,9 +107,9 @@ public class CatoMeleeAttackGoal extends Goal {
         boolean inTriggerRange = distSqr <= triggerSqr;
 
         // ------------------------------------------------------------
-        // NEW: root during attack animation (optional)
+        // Movement gating during attack animation (delay + stop window)
         // ------------------------------------------------------------
-        if (!info.moveDuringAttackAnimation() && this.mob.isAttacking()) {
+        if (this.mob.isAttacking() && !this.mob.canMoveDuringCurrentAttackAnimTick()) {
             this.mob.getNavigation().stop();
             this.ticksUntilNextPathRecalc = 4;
 

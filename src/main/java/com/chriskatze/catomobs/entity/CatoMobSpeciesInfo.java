@@ -45,11 +45,32 @@ public record CatoMobSpeciesInfo(
         double chaseSpeedModifier,
 
         /**
-         * NEW:
-         * If false: root during attack animation (no chasing movement while isAttacking() is true).
-         * If true: allow navigation to keep updating while the attack animation plays.
+         * If false: normally root during attack animation (no chasing movement while isAttacking() is true).
+         * If true: allow navigation to keep updating while the attack animation plays,
+         *          subject to the start-delay / stop-after tick windows below.
          */
         boolean moveDuringAttackAnimation,
+
+        /**
+         * If moveDuringAttackAnimation == true:
+         *   - root until attackAnimAgeTicks >= this value (delay before movement starts)
+         * If moveDuringAttackAnimation == false:
+         *   - (optional) still used only if you choose to implement special behavior, otherwise ignored
+         */
+        int attackMoveStartDelayTicks,
+
+        /**
+         * Movement window limiter during attack animation.
+         *
+         * If > 0:
+         *   - when moveDuringAttackAnimation == true:
+         *       movement is allowed only while attackAnimAgeTicks is in [attackMoveStartDelayTicks .. attackMoveStopAfterTicks-1]
+         *   - when moveDuringAttackAnimation == false:
+         *       movement is allowed only while attackAnimAgeTicks < attackMoveStopAfterTicks (early-move window), then rooted.
+         *
+         * If <= 0: "no stop limit" (move until animation ends, if enabled and after delay).
+         */
+        int attackMoveStopAfterTicks,
 
         // ================================================================
         // 4) WANDER / MOVEMENT (goal tuning)

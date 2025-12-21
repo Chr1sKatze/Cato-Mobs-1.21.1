@@ -478,6 +478,59 @@ public abstract class CatoBaseMob extends Animal {
     protected void onAttackAnimationStart(LivingEntity target) { }
     protected void onAttackAnimationEnd() { }
 
+    // How many ticks since the current attack animation started (server-side)
+    private int attackAnimAgeTicks = 0;
+
+    public int getAttackAnimAgeTicks() {
+        return attackAnimAgeTicks;
+    }
+
+    /**
+     * Whether navigation movement is allowed THIS TICK while an attack animation is active.
+     * Uses:
+     * - info.moveDuringAttackAnimation()
+     * - info.attackMoveStartDelayTicks()
+     * - info.attackMoveStopAfterTicks()
+     *
+     * Semantics:
+     *  A) moveDuringAttackAnimation == true:
+     *     - root until age >= startDelay
+     *     - if stopAfter > 0: allow movement while age < stopAfter
+     *       (so: [startDelay .. stopAfter-1] is moving window)
+     *     - if stopAfter <= 0: allow movement until animation ends
+     *
+     *  B) moveDuringAttackAnimation == false:
+     *     - root always, EXCEPT:
+     *     - if stopAfter > 0: allow movement only while age < stopAfter (early-move window)
+     */
+    public boolean canMoveDuringCurrentAttackAnimTick() {
+        if (!this.isAttacking() || this.attackAnimTicksRemaining <= 0) return true;
+
+        CatoMobSpeciesInfo info = this.getSpeciesInfo();
+        int age = Math.max(0, this.attackAnimAgeTicks);
+
+        int startDelay = Math.max(0, info.attackMoveStartDelayTicks());
+        int stopAfter = info.attackMoveStopAfterTicks(); // can be <= 0 intentionally
+
+        if (info.moveDuringAttackAnimation()) {
+            // must wait until delay has passed
+            if (age < startDelay) return false;
+
+            // optional stop window (if > 0)
+            if (stopAfter > 0 && age >= stopAfter) return false;
+
+            return true;
+        } else {
+            // normally rooted
+            if (stopAfter > 0) {
+                // allow only for early window
+                return age < stopAfter;
+            }
+            return false;
+        }
+    }
+
+
     protected void onWanderStart(boolean running) { }
     protected void onWanderStop() { }
 
@@ -596,6 +649,9 @@ public abstract class CatoBaseMob extends Animal {
         this.attackAnimTicksRemaining = info.attackAnimTotalTicks();
         this.attackTicksUntilHit = info.attackHitDelayTicks();
 
+        // reset "age since attack started" when starting a new attack
+        this.attackAnimAgeTicks = 0;
+
         this.onAttackAnimationStart(target);
         this.setAttacking(true);
         return true;
@@ -607,6 +663,7 @@ public abstract class CatoBaseMob extends Animal {
         this.attackAnimTicksRemaining = 0;
         this.queuedAttackTarget = null;
         this.setAttacking(false);
+        this.attackAnimAgeTicks = 0;
         this.onAttackAnimationEnd();
     }
 
@@ -1194,11 +1251,20 @@ public abstract class CatoBaseMob extends Animal {
             if (this.attackAnimTicksRemaining > 0) {
                 this.attackAnimTicksRemaining--;
 
+                // increment "age since attack started" while animation is active
+                this.attackAnimAgeTicks++;
+
                 if (this.attackAnimTicksRemaining == 0) {
                     // IMPORTANT: stop "attacking" flag so GeckoLib returns to idle/walk/run
                     this.setAttacking(false);
                     this.onAttackAnimationEnd();
+
+                    // reset age when the animation ends
+                    this.attackAnimAgeTicks = 0;
                 }
+            } else {
+                // Safety: if we're not in an attack animation, age must be 0
+                this.attackAnimAgeTicks = 0;
             }
 
             // While angry: force look-at target (clamped by max head rot)
@@ -1210,6 +1276,7 @@ public abstract class CatoBaseMob extends Animal {
                     this.getLookControl().setLookAt(this.getTarget(), (float) maxYaw, (float) maxPitch);
                 }
             }
+
             // Debug overlay snapshot
             tickAiDebugServer();
         }

@@ -40,8 +40,15 @@ public final class CatoMobSpeciesInfoBuilder {
 
     private double chaseSpeedModifier = 1.1D;
 
-    /** NEW: allow movement during attack animation window */
+    /**
+     * Attack animation movement gating:
+     * - moveDuringAttackAnimation: primary toggle
+     * - attackMoveStartDelayTicks: delay before movement starts (when enabled)
+     * - attackMoveStopAfterTicks: optional stop limiter (see CatoMobSpeciesInfo docs)
+     */
     private boolean moveDuringAttackAnimation = false;
+    private int attackMoveStartDelayTicks = 0;
+    private int attackMoveStopAfterTicks = 0; // <=0 means "no stop limit" for enabled-mode
 
     // -----------------------------
     // 4) Wander / movement
@@ -170,9 +177,26 @@ public final class CatoMobSpeciesInfoBuilder {
         return this;
     }
 
-    /** NEW */
+    /**
+     * Simple toggle only (kept for convenience/backward usage).
+     * You can still optionally call attackAnimMoveWindow(...) to set delay/stop.
+     */
     public CatoMobSpeciesInfoBuilder moveDuringAttackAnimation(boolean allowMove) {
         this.moveDuringAttackAnimation = allowMove;
+        return this;
+    }
+
+    /**
+     * Attack animation movement window config.
+     *
+     * @param startDelayTicks delay before movement starts (>=0). Only meaningful when moveDuringAttackAnimation == true.
+     * @param stopAfterTicks  optional stop limit:
+     *                        - if moveDuringAttackAnimation == true: <=0 means "never stop" (move until animation ends)
+     *                        - if moveDuringAttackAnimation == false: >0 means "allow movement for first N ticks, then root"
+     */
+    public CatoMobSpeciesInfoBuilder attackMoveWindow(int startDelayTicks, int stopAfterTicks) {
+        this.attackMoveStartDelayTicks = startDelayTicks;
+        this.attackMoveStopAfterTicks = stopAfterTicks;
         return this;
     }
 
@@ -334,6 +358,14 @@ public final class CatoMobSpeciesInfoBuilder {
 
         double chaseMod = Math.max(0.05D, this.chaseSpeedModifier);
 
+        // ---- Attack animation movement window safety ----
+        int moveDelay = Math.max(0, this.attackMoveStartDelayTicks);
+        int moveStopAfter = this.attackMoveStopAfterTicks; // keep sign; <=0 is meaningful
+        // If stopAfter is set, ensure it isn't earlier than delay (or the window would be empty)
+        if (moveStopAfter > 0 && moveStopAfter < moveDelay) {
+            moveStopAfter = moveDelay;
+        }
+
         CatoMobSpeciesInfo.WaterMovementConfig wmIn =
                 (this.waterMovement == null) ? CatoMobSpeciesInfo.WaterMovementConfig.disabled() : this.waterMovement;
 
@@ -374,6 +406,8 @@ public final class CatoMobSpeciesInfoBuilder {
                 Math.max(0, attackHitDelayTicks),
                 chaseMod,
                 this.moveDuringAttackAnimation,
+                moveDelay,
+                moveStopAfter,
 
                 // 4) Wander
                 Math.max(0.0D, wanderWalkSpeed),

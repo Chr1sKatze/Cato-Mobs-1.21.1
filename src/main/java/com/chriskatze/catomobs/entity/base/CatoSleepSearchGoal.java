@@ -3,44 +3,41 @@ package com.chriskatze.catomobs.entity.base;
 import com.chriskatze.catomobs.entity.CatoMobSpeciesInfo;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.ai.goal.Goal;
-import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.EnumSet;
 
-/**
- * CatoSleepSearchGoal
- *
- * Purpose:
- * If a species requires a roof to sleep (sleepRequiresRoof = true), this goal
- * searches for a nearby "roofed" spot, walks the mob there, then triggers sleep.
- *
- * Key concept:
- * - CatoBaseMob decides "I want to sleep" by opening a short desire window.
- * - If roof is required and we are currently unroofed, this goal consumes that desire
- *   by finding a suitable spot and moving there.
- *
- * Important:
- * - This goal does NOT do random rolling. It only runs if the base class already wants sleep.
- * - On failure (no spot / timeout / spot becomes invalid), we clear the desire episode and apply cooldown.
- */
 public class CatoSleepSearchGoal extends Goal {
 
-    /** Distance^2 threshold for "close enough to target block". (~1.4 blocks) */
     private static final double ARRIVAL_DIST_SQR = 2.0D;
 
-    /** Owning mob. Provides sleep flags, species info, roof checks, memory, etc. */
+    // ✅ NEW: prevent "standing still with MOVE flag" when no target exists
+    private static final int NO_TARGET_GIVE_UP_TICKS = 20;   // ~1s
+    private static final int NO_TARGET_COOLDOWN_TICKS = 40;  // ~2s
+
     private final CatoBaseMob mob;
 
-    /** Destination stand position (must be roofed). Set during canUse(). */
     private BlockPos targetPos = null;
-
-    /** Safety timeout: when it reaches 0 the search is considered failed. */
     private int searchTimeoutTicks = 0;
+    private int failedMoveToTicks = 0;
+
+    // Optional: reduce CPU by not running the expensive finder every tick
+    private int repickCooldownTicks = 0;
+
+    // ✅ NEW: counts ticks with no usable target
+    private int noTargetTicks = 0;
+
+    // ------------------------------------------------------------
+    // ✅ Robust stuck detection (prevents "green but standing")
+    // ------------------------------------------------------------
+    private Vec3 lastPos = null;
+    private int notMovingTicks = 0;
+    private double lastDistSqr = Double.NaN;
+    private int noProgressTicks = 0;
 
     public CatoSleepSearchGoal(CatoBaseMob mob) {
         this.mob = mob;
-        this.setFlags(EnumSet.of(Flag.MOVE));
+        this.setFlags(EnumSet.of(Flag.MOVE, Flag.LOOK));
     }
 
     @Override
@@ -48,10 +45,8 @@ public class CatoSleepSearchGoal extends Goal {
         CatoMobSpeciesInfo info = mob.getSpeciesInfo();
 
         if (!info.sleepEnabled()) return false;
-
         if (mob.isSleeping()) return false;
         if (mob.isSleepSearching()) return false;
-
         if (mob.isSleepSearchOnCooldown()) return false;
 
         if (mob.getTarget() != null || mob.isAggressive()) return false;
@@ -67,25 +62,15 @@ public class CatoSleepSearchGoal extends Goal {
 
         if (!mob.wantsToSleepNow()) return false;
 
-        // Delegate selection to helper (includes:
-        // - remembered spots
-        // - random search
-        // - buddy scoring
-        // - "not occupied by sleeping mob" validation
+        // We start the episode even if we have no immediate candidate.
+        // tick() will keep trying, but now it can "give up" quickly to avoid freezing.
         this.targetPos = SleepSpotFinder.findRoofedSleepSpot(mob, info);
 
-        if (this.targetPos == null) {
-            // couldn't find a candidate this pass; retry later *within the desire episode*
-            mob.startSleepSearchCooldown(info.sleepSearchCooldownTicks());
-            return false;
-        }
-
-        return true;
+        return this.targetPos != null;
     }
 
     @Override
     public boolean canContinueToUse() {
-        if (targetPos == null) return false;
         if (mob.isSleeping()) return false;
 
         CatoMobSpeciesInfo info = mob.getSpeciesInfo();
@@ -101,20 +86,31 @@ public class CatoSleepSearchGoal extends Goal {
 
     @Override
     public void start() {
-        if (this.targetPos == null) {
-            mob.setSleepSearching(false);
-            mob.startSleepSearchCooldown(mob.getSpeciesInfo().sleepSearchCooldownTicks());
-            return;
-        }
-
         mob.setSleepSearching(true);
+
         searchTimeoutTicks = Math.max(1, mob.getSpeciesInfo().sleepSearchTimeoutTicks());
+        failedMoveToTicks = 0;
+        repickCooldownTicks = 0;
+        noTargetTicks = 0;
+
+        lastPos = mob.position();
+        notMovingTicks = 0;
+        lastDistSqr = Double.NaN;
+        noProgressTicks = 0;
 
         mob.getNavigation().stop();
         mob.setDeltaMovement(mob.getDeltaMovement().multiply(0.0D, 1.0D, 0.0D));
 
-        double speed = Math.max(0.1D, mob.getSpeciesInfo().wanderWalkSpeed());
-        moveToTarget(speed);
+        if (this.targetPos != null) {
+            double speed = Math.max(0.1D, mob.getSpeciesInfo().wanderWalkSpeed());
+            BlockPos pos = this.targetPos;
+            if (!moveToTarget(pos, speed)) {
+                // If we fail instantly, don't freeze - abandon target and let tick() handle repick/give-up.
+                mob.strikeSleepSpot(pos);
+                this.targetPos = null;
+                this.noTargetTicks = NO_TARGET_GIVE_UP_TICKS; // makes us give up quickly unless a target appears
+            }
+        }
     }
 
     @Override
@@ -122,6 +118,15 @@ public class CatoSleepSearchGoal extends Goal {
         mob.setSleepSearching(false);
         targetPos = null;
         searchTimeoutTicks = 0;
+        failedMoveToTicks = 0;
+        repickCooldownTicks = 0;
+        noTargetTicks = 0;
+
+        lastPos = null;
+        notMovingTicks = 0;
+        lastDistSqr = Double.NaN;
+        noProgressTicks = 0;
+
         mob.getNavigation().stop();
     }
 
@@ -132,77 +137,208 @@ public class CatoSleepSearchGoal extends Goal {
 
     @Override
     public void tick() {
-        Level level = mob.level();
         CatoMobSpeciesInfo info = mob.getSpeciesInfo();
 
-        // A) Hard failure if target got lost
+        if (--searchTimeoutTicks <= 0) {
+            mob.clearSleepDesire();
+            mob.startSleepSearchCooldown(info.sleepSearchCooldownTicks());
+            stop();
+            return;
+        }
+
+        if (mob.getTarget() != null || mob.isAggressive()) {
+            mob.clearSleepDesire();
+            mob.startSleepSearchCooldown(info.sleepSearchCooldownTicks());
+            stop();
+            return;
+        }
+
+        if (repickCooldownTicks > 0) repickCooldownTicks--;
+
+        // 1) Acquire a target if we don't have one
         if (targetPos == null) {
-            mob.setSleepSearching(false);
-            mob.clearSleepDesire();
-            mob.startSleepSearchCooldown(info.sleepSearchCooldownTicks());
-            stop();
-            return;
-        }
+            lastDistSqr = Double.NaN;
+            noProgressTicks = 0;
+            notMovingTicks = 0;
+            lastPos = mob.position();
 
-        // B) Timeout handling
-        searchTimeoutTicks--;
-        if (searchTimeoutTicks <= 0) {
-            mob.clearSleepDesire();
-            mob.startSleepSearchCooldown(info.sleepSearchCooldownTicks());
-            stop();
-            return;
-        }
+            if (repickCooldownTicks > 0) return;
 
-        // C) Keep navigation alive
-        if (mob.getNavigation().isDone()) {
-            double speed = Math.max(0.1D, info.wanderWalkSpeed());
-            moveToTarget(speed);
-        }
-
-        // D) Arrival handling
-        double distSqr = mob.distanceToSqr(Vec3.atBottomCenterOf(targetPos));
-        if (distSqr > ARRIVAL_DIST_SQR) return;
-
-        int roofMax = Math.max(1, info.sleepSearchCeilingScanMaxBlocks());
-        int roofDy = mob.roofDistance(targetPos, roofMax);
-
-        if (roofDy != -1) {
-
-            // Optional: buddy override relocation (snuggle)
-            if (info.sleepBuddyCanOverrideMemory()) {
-                BlockPos buddySpot = SleepBuddyRelocator.findBuddyAdjacentSleepSpot(mob, info, targetPos);
-
-                if (buddySpot != null && !buddySpot.equals(targetPos)) {
-                    mob.strikeSleepSpot(targetPos);
+            // ✅ Buddy-first acquisition (cheap and effective)
+            if (info.sleepPreferSleepingBuddies()) {
+                BlockPos buddySpot = SleepBuddyRelocator.findBuddyAdjacentSleepSpot(mob, info, mob.blockPosition());
+                if (buddySpot != null) {
                     targetPos = buddySpot;
-
-                    double speed = Math.max(0.1D, info.wanderWalkSpeed());
-                    moveToTarget(speed);
-                    return;
                 }
             }
 
-            // Commit: remember + consume desire + sleep
-            mob.rememberSleepSpot(targetPos);
-            mob.clearSleepDesire();
-            mob.beginSleepingFromGoal();
+            // Otherwise fall back to full finder
+            if (targetPos == null) {
+                targetPos = SleepSpotFinder.findRoofedSleepSpot(mob, info);
+            }
 
-            mob.getNavigation().stop();
-            stop();
+            repickCooldownTicks = 5;
+
+            if (targetPos == null) {
+                // ✅ CRITICAL FIX:
+                // Do NOT keep holding MOVE flag while doing nothing.
+                // Give up quickly and let wander resume.
+                if (++noTargetTicks >= NO_TARGET_GIVE_UP_TICKS) {
+                    mob.startSleepSearchCooldown(NO_TARGET_COOLDOWN_TICKS);
+                    stop();
+                }
+                return;
+            }
+
+            // Found a target => reset "no target" counter
+            noTargetTicks = 0;
+            failedMoveToTicks = 0;
+
+            double speed = Math.max(0.1D, info.wanderWalkSpeed());
+            BlockPos pos = targetPos;
+            if (!moveToTarget(pos, speed)) {
+                // Can't even begin pathing -> strike and abandon, but don't freeze.
+                mob.strikeSleepSpot(pos);
+                targetPos = null;
+                repickCooldownTicks = 0;
+
+                // push us towards giving up quickly if we keep failing
+                noTargetTicks = Math.min(NO_TARGET_GIVE_UP_TICKS, noTargetTicks + 5);
+            }
             return;
         }
 
-        // Roof invalid => fail episode + cooldown
+        BlockPos pos = targetPos;
+        if (pos == null) return;
+
+        // ------------------------------------------------------------
+        // STUCK WATCHDOG
+        // ------------------------------------------------------------
+        {
+            Vec3 now = mob.position();
+
+            boolean navSaysMoving = mob.getNavigation().isInProgress();
+            boolean actuallyMoved = (lastPos == null) || now.distanceToSqr(lastPos) > 0.0004D; // ~0.02 blocks
+
+            if (navSaysMoving && !actuallyMoved) notMovingTicks++;
+            else notMovingTicks = 0;
+
+            lastPos = now;
+
+            double distSqrToTarget = mob.distanceToSqr(Vec3.atBottomCenterOf(pos));
+            if (!Double.isNaN(lastDistSqr)) {
+                if (distSqrToTarget >= lastDistSqr - 0.05D) noProgressTicks++;
+                else noProgressTicks = 0;
+            }
+            lastDistSqr = distSqrToTarget;
+
+            if (notMovingTicks >= 30 || noProgressTicks >= 60) {
+                mob.getNavigation().stop();
+                mob.strikeSleepSpot(pos);
+
+                targetPos = null;
+                failedMoveToTicks = 0;
+                repickCooldownTicks = 0;
+
+                lastDistSqr = Double.NaN;
+                noProgressTicks = 0;
+                notMovingTicks = 0;
+                lastPos = mob.position();
+
+                // If we keep getting stuck, don't hold MOVE forever.
+                noTargetTicks = Math.min(NO_TARGET_GIVE_UP_TICKS, noTargetTicks + 8);
+                return;
+            }
+        }
+
+        // 2) Keep navigation alive
+        if (!mob.getNavigation().isInProgress() || mob.getNavigation().isDone()) {
+            double speed = Math.max(0.1D, info.wanderWalkSpeed());
+            if (!moveToTarget(pos, speed)) {
+                if (++failedMoveToTicks >= 10) {
+                    mob.strikeSleepSpot(pos);
+
+                    targetPos = null;
+                    failedMoveToTicks = 0;
+                    repickCooldownTicks = 0;
+
+                    lastDistSqr = Double.NaN;
+                    noProgressTicks = 0;
+                    notMovingTicks = 0;
+
+                    // Don't freeze on repeated failures.
+                    noTargetTicks = Math.min(NO_TARGET_GIVE_UP_TICKS, noTargetTicks + 5);
+                }
+                return;
+            } else {
+                failedMoveToTicks = 0;
+            }
+        }
+
+        // 3) Arrival handling
+        double distSqrToTarget = mob.distanceToSqr(Vec3.atBottomCenterOf(pos));
+        if (distSqrToTarget > ARRIVAL_DIST_SQR) return;
+
+        int roofMax = Math.max(1, info.sleepSearchCeilingScanMaxBlocks());
+        int roofDy = mob.roofDistance(pos, roofMax);
+
+        if (roofDy == -1) {
+            mob.strikeSleepSpot(pos);
+            targetPos = null;
+            repickCooldownTicks = 0;
+
+            lastDistSqr = Double.NaN;
+            noProgressTicks = 0;
+            notMovingTicks = 0;
+            lastPos = mob.position();
+
+            noTargetTicks = Math.min(NO_TARGET_GIVE_UP_TICKS, noTargetTicks + 5);
+            return;
+        }
+
+        // Buddy override at arrival (fine to keep)
+        if (info.sleepBuddyCanOverrideMemory()) {
+            BlockPos buddySpot = SleepBuddyRelocator.findBuddyAdjacentSleepSpot(mob, info, pos);
+
+            if (buddySpot != null && !buddySpot.equals(pos)) {
+                mob.strikeSleepSpot(pos);
+                targetPos = buddySpot;
+                failedMoveToTicks = 0;
+
+                lastDistSqr = Double.NaN;
+                noProgressTicks = 0;
+                notMovingTicks = 0;
+                lastPos = mob.position();
+
+                double speed = Math.max(0.1D, info.wanderWalkSpeed());
+                BlockPos pos2 = targetPos;
+                if (!moveToTarget(pos2, speed)) {
+                    mob.strikeSleepSpot(pos2);
+                    targetPos = null;
+                    repickCooldownTicks = 0;
+
+                    noTargetTicks = Math.min(NO_TARGET_GIVE_UP_TICKS, noTargetTicks + 5);
+                }
+                return;
+            }
+        }
+
+        // Commit: sleep now
+        mob.rememberSleepSpot(pos);
         mob.clearSleepDesire();
-        mob.startSleepSearchCooldown(info.sleepSearchCooldownTicks());
+        mob.beginSleepingFromGoal();
+
+        mob.getNavigation().stop();
         stop();
     }
 
-    private void moveToTarget(double speed) {
-        mob.getNavigation().moveTo(
-                targetPos.getX() + 0.5D,
-                targetPos.getY(),
-                targetPos.getZ() + 0.5D,
+    private boolean moveToTarget(BlockPos pos, double speed) {
+        if (pos == null) return false;
+
+        return mob.getNavigation().moveTo(
+                pos.getX() + 0.5D,
+                pos.getY(),
+                pos.getZ() + 0.5D,
                 speed
         );
     }

@@ -5,24 +5,13 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.Level;
 import org.jetbrains.annotations.Nullable;
 
-/**
- * SleepBuddyRelocator
- *
- * Optional “snuggle” helper:
- * - Finds the nearest sleeping buddy (filtered by sleepBuddyTypes)
- * - Finds the best valid adjacent standPos near that buddy
- *
- * Uses SleepSpotFinder's shared validation to ensure:
- * - headroom + roof + reachable
- * - NOT occupied by an already sleeping mob (no pile-ups)
- * - respects home radius if configured
- */
 public final class SleepBuddyRelocator {
 
     private SleepBuddyRelocator() {}
 
     @Nullable
-    public static BlockPos findBuddyAdjacentSleepSpot(CatoBaseMob mob, CatoMobSpeciesInfo info, BlockPos fromPos) {
+    public static BlockPos findBuddyAdjacentSleepSpot(CatoBaseMob mob, CatoMobSpeciesInfo info, @Nullable BlockPos fromPos) {
+        if (fromPos == null) return null;
         if (!info.sleepPreferSleepingBuddies()) return null;
 
         Level level = mob.level();
@@ -45,7 +34,7 @@ public final class SleepBuddyRelocator {
 
         if (buddies.isEmpty()) return null;
 
-        // Nearest sleeping buddy
+        // Nearest sleeping buddy to THIS mob
         CatoBaseMob nearest = null;
         double best = Double.MAX_VALUE;
         for (CatoBaseMob b : buddies) {
@@ -65,12 +54,16 @@ public final class SleepBuddyRelocator {
 
         int minHeadroom = Math.max(1, info.sleepSearchMinHeadroomBlocks());
 
-        // ✅ IMPORTANT: buddy relocation should NOT consume the global path budget
+        // IMPORTANT: buddy relocation should NOT consume the global path budget
         SleepSpotFinder.PathBudget pathBudget = null;
 
+        // Small preference: try closer offsets first (spiral-ish via dist check)
         for (int dx = -rr; dx <= rr; dx++) {
             for (int dz = -rr; dz <= rr; dz++) {
                 if (dx == 0 && dz == 0) continue;
+
+                // Prefer near-adjacent positions (skip far corners if you like)
+                // if (Math.abs(dx) + Math.abs(dz) > rr) continue; // optional manhattan cutoff
 
                 BlockPos candidate = buddyBase.offset(dx, 0, dz);
 

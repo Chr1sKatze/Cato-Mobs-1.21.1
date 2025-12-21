@@ -210,9 +210,27 @@ public abstract class CatoBaseMob extends Animal {
         String navStr = "nav=" + (this.getNavigation().isInProgress() ? "IN_PROGRESS"
                 : (this.getNavigation().isDone() ? "DONE" : "OTHER"));
 
+        // ------------------------------------------------------------
+        // Sleep gate snapshot (WHY search may not be firing)
+        // ------------------------------------------------------------
+        CatoMobSpeciesInfo info = getSpeciesInfo();
+
+        boolean isDay = this.level().isDay();
+        boolean allowedTime = (isDay && info.sleepAtDay()) || (!isDay && info.sleepAtNight());
+
+        int roofMax = Math.max(1, info.sleepSearchCeilingScanMaxBlocks());
+        boolean roofedHere = info.sleepRequiresRoof() && this.isRoofed(this.blockPosition(), roofMax);
+
+        boolean desire = hasSleepDesire(); // your existing API
+        boolean searching = isSleepSearching();
+        boolean cooldown = isSleepSearchOnCooldown();
+
         String top =
                 "AI DEBUG" +
-                        "\nstate: sleep=" + isSleeping() +
+                        "\nstate:" +
+                        " sleep=" + isSleeping() +
+                        " desire=" + desire +
+                        " desireTicks=" + getSleepDesireTicks() +
                         " angryTime=" + this.angerTime +
                         " aggressive=" + this.isAggressive() +
                         " visuallyAngry=" + this.isVisuallyAngry() +
@@ -234,6 +252,28 @@ public abstract class CatoBaseMob extends Animal {
         lines.add("--------------------------------");
         lines.add("GOALS (target):");
         lines.addAll(dumpGoalsSafe(this.targetSelector));
+
+        // ------------------------------------------------------------
+        // Sleep debugging block (expanded)
+        // ------------------------------------------------------------
+        lines.add("--------------------------------");
+        lines.add("sleep:");
+        lines.add("  enabled=" + info.sleepEnabled()
+                + " requiresRoof=" + info.sleepRequiresRoof()
+                + " allowedTime=" + allowedTime + " (day=" + isDay + ")"
+        );
+        lines.add("  desire=" + desire
+                + " desireTicks=" + getSleepDesireTicks()
+                + " searching=" + searching
+                + " cooldown=" + cooldown
+                + " roofedHere=" + roofedHere
+        );
+        lines.add("  target=" + (this.getTarget() != null)
+                + " aggressive=" + this.isAggressive()
+                + " onGround=" + this.onGround()
+                + " inWater=" + this.isInWater()
+                + " underWater=" + this.isUnderWater()
+        );
 
         return String.join("\n", lines);
     }
@@ -485,6 +525,14 @@ public abstract class CatoBaseMob extends Animal {
 
         this.sleepTicksRemaining = min + this.getRandom().nextInt(range);
         this.getNavigation().stop();
+    }
+
+    public boolean hasSleepDesire() {
+        return sleepDesireTicks > 0;
+    }
+
+    public int getSleepDesireTicks() {
+        return sleepDesireTicks;
     }
 
     // ================================================================
@@ -964,13 +1012,26 @@ public abstract class CatoBaseMob extends Animal {
         return List.copyOf(rememberedSleepSpots);
     }
 
-    /** Adds a strike; deletes only after max strikes reached. */
-    public void strikeSleepSpot(BlockPos pos) {
+    /** Adds a strike; deletes memory entry only after max strikes reached.
+     *  ALSO records strikes into a global blacklist (works for non-remembered spots too).
+     */
+    public void strikeSleepSpot(@Nullable BlockPos pos) {
+        if (this.level().isClientSide) return;
         if (pos == null) return;
 
+        BlockPos p = pos.immutable();
+        long key = p.asLong();
+
+        // 1) Always record strike into blacklist (works for ANY spot)
+        {
+            byte cur = failedSleepSpotStrikes.getOrDefault(key, (byte) 0);
+            int next = Math.min(SLEEP_SPOT_BLACKLIST_MAX_STRIKES, (cur & 0xFF) + 1);
+            failedSleepSpotStrikes.put(key, (byte) next);
+        }
+
+        // 2) If it's in remembered list, also strike the memory entry
         for (var it = rememberedSleepSpots.iterator(); it.hasNext();) {
             SleepSpotMemory mem = it.next();
-            BlockPos p = pos.immutable();
             if (mem.pos.equals(p)) {
                 mem.addStrike();
                 if (mem.isDead(getSpeciesInfo())) {
@@ -978,6 +1039,70 @@ public abstract class CatoBaseMob extends Animal {
                 }
                 return;
             }
+        }
+    }
+
+    // ================================================================
+    // 17.5) FAILED SLEEP SPOT BLACKLIST (covers non-remembered spots too)
+    // ================================================================
+
+    /**
+     * Blacklist for sleep spots that repeatedly fail to path / get stuck.
+     * Key: BlockPos.asLong()
+     * Value: strike count (small, capped)
+     *
+     * This complements rememberedSleepSpots:
+     * - rememberedSleepSpots strikes only work for remembered entries
+     * - blacklist works for ANY attempted position (most important!)
+     */
+    private final HashMap<Long, Byte> failedSleepSpotStrikes = new HashMap<>();
+
+    /** Cap strike values to avoid overflow / permanent bans. */
+    private static final int SLEEP_SPOT_BLACKLIST_MAX_STRIKES = 6;
+
+    /**
+     * Strike threshold after which a spot is considered "blacklisted" and should be skipped.
+     * Tune: 2-3 is usually enough.
+     */
+    private static final int SLEEP_SPOT_BLACKLIST_THRESHOLD = 3;
+
+    /** Decay settings (keep it slow; this is just to prevent permanent bans). */
+    private static final int SLEEP_SPOT_BLACKLIST_DECAY_INTERVAL_TICKS = 200; // 10s
+    private int sleepSpotBlacklistDecayTicker = 0;
+
+    public boolean isSleepSpotBlacklisted(@Nullable BlockPos pos) {
+        if (pos == null) return false;
+        if (this.level().isClientSide) return false;
+
+        byte strikes = failedSleepSpotStrikes.getOrDefault(pos.asLong(), (byte) 0);
+        return strikes >= (byte) SLEEP_SPOT_BLACKLIST_THRESHOLD;
+    }
+
+    public int getSleepSpotBlacklistStrikes(@Nullable BlockPos pos) {
+        if (pos == null) return 0;
+        if (this.level().isClientSide) return 0;
+        return failedSleepSpotStrikes.getOrDefault(pos.asLong(), (byte) 0);
+    }
+
+    /** Optional: clear all blacklist (debug). */
+    public void clearSleepSpotBlacklist() {
+        if (this.level().isClientSide) return;
+        failedSleepSpotStrikes.clear();
+    }
+
+    private void tickSleepSpotBlacklistDecayServer() {
+        if (failedSleepSpotStrikes.isEmpty()) return;
+
+        if (++sleepSpotBlacklistDecayTicker < SLEEP_SPOT_BLACKLIST_DECAY_INTERVAL_TICKS) return;
+        sleepSpotBlacklistDecayTicker = 0;
+
+        // Decrease every strike by 1; remove at 0
+        var it = failedSleepSpotStrikes.entrySet().iterator();
+        while (it.hasNext()) {
+            var e = it.next();
+            int v = (e.getValue() & 0xFF) - 1;
+            if (v <= 0) it.remove();
+            else e.setValue((byte) v);
         }
     }
 
@@ -990,6 +1115,11 @@ public abstract class CatoBaseMob extends Animal {
         super.aiStep();
 
         if (!level().isClientSide) {
+
+            // ------------------------------------------------------------
+            // Decay failed sleep-spot blacklist (slow, server-only)
+            // ------------------------------------------------------------
+            tickSleepSpotBlacklistDecayServer();
 
             // Decrement desire window (server-only)
             if (sleepDesireTicks > 0) {

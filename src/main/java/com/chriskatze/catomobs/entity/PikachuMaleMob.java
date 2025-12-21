@@ -49,15 +49,15 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
                     // Water (speed + "feel")
                     .waterSwimSpeedMultiplier(1.8D)
                     .waterMovement(
-                            true,   // dampingEnabled
-                            0.7D,   // verticalDamping
-                            0.4D,   // verticalSpeedClamp
-                            0.2D    // dampingApplyThreshold
+                            true,
+                            0.7D,
+                            0.4D,
+                            0.2D
                     )
 
                     // Sleep
                     .sleepWindow(true, true, false)
-                    .sleepAttempts(20 * 5, 0.80f)
+                    .sleepAttempts(20 * 5, 0.50f)
                     .sleepDuration(20 * 120, 20 * 240, 0.45f)
                     .sleepGrace(200, 400)
                     .sleepDesireWindow(400)
@@ -66,10 +66,10 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
                     // Social sleeping
                     .sleepBuddies(
                             true,
-                            32.0D,
+                            48.0D,
                             4,
-                            1,
-                            5,
+                            2,
+                            25,
                             true,
                             Set.of(CMEntities.PIKACHU_MALE.get())
                     )
@@ -83,8 +83,8 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
                             400,
                             32,
                             1,
-                            8,
-                            20 * 6,
+                            12,
+                            20 * 10,
                             20 * 3,
                             2.0D,
                             0.0D,

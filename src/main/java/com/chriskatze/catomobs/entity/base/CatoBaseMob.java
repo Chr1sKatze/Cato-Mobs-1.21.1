@@ -779,7 +779,7 @@ public abstract class CatoBaseMob extends Animal {
         CatoGoalPriorityProfile prio = getGoalPriorities();
 
         // Keeps retaliation target behavior more “vanilla stable”
-        this.targetSelector.addGoal(prio.targetHurtBy, new HurtByTargetGoal(this));
+        this.targetSelector.addGoal(prio.targetHurtBy, new CatoGatedHurtByTargetGoal(this));
 
         this.goalSelector.addGoal(prio.meleeAttack, new CatoMeleeAttackGoal(this, chaseSpeed, true, cooldown));
 
@@ -790,7 +790,7 @@ public abstract class CatoBaseMob extends Animal {
         double chaseSpeed = getSpeciesInfo().chaseSpeedModifier();
         CatoGoalPriorityProfile prio = getGoalPriorities();
 
-        this.targetSelector.addGoal(prio.targetHurtBy, new HurtByTargetGoal(this));
+        this.targetSelector.addGoal(prio.targetHurtBy, new CatoGatedHurtByTargetGoal(this));
         this.targetSelector.addGoal(prio.targetNearestPlayer,
                 new NearestAttackableTargetGoal<>(this, Player.class, true));
 
@@ -1215,6 +1215,12 @@ public abstract class CatoBaseMob extends Animal {
                 this.setMoveMode(MOVE_IDLE);
 
                 clearAttackState();
+
+                this.targetSelector.getAvailableGoals().forEach(w -> {
+                    if (w.getGoal() instanceof CatoGatedHurtByTargetGoal) {
+                        w.stop();
+                    }
+                });
             }
 
             // Sync "visual angry" to clients

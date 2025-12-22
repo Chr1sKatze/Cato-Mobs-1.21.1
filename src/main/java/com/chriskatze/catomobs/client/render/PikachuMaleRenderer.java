@@ -41,6 +41,12 @@ public class PikachuMaleRenderer extends GeoEntityRenderer<PikachuMaleMob> {
     public static final float BABY_SCALE = 0.40f;
 
     /**
+     * Base shadow radius for the ADULT (before baby scaling).
+     * This comes from species info so it’s data-driven per mob.
+     */
+    private final float baseShadowRadius;
+
+    /**
      * Renderer constructor.
      *
      * @param ctx The renderer context provided by Minecraft when registering renderers.
@@ -52,8 +58,11 @@ public class PikachuMaleRenderer extends GeoEntityRenderer<PikachuMaleMob> {
     public PikachuMaleRenderer(EntityRendererProvider.Context ctx) {
         super(ctx, new PikachuMaleModel());
 
+        // Take the baseline from the species info (intended for adult visuals).
+        this.baseShadowRadius = PikachuMaleMob.SPECIES_INFO.shadowRadius();
+
         // Initial shadow size (will be overwritten each render call depending on baby/adult)
-        this.shadowRadius = 0.3f * MODEL_SCALE;
+        this.shadowRadius = this.baseShadowRadius;
     }
 
     /**
@@ -85,10 +94,13 @@ public class PikachuMaleRenderer extends GeoEntityRenderer<PikachuMaleMob> {
         poseStack.scale(scale, scale, scale);
 
         // Keep the shadow visually consistent with the scaled model.
-        this.shadowRadius = 0.3f * scale;
+        // baseShadowRadius is for adult (MODEL_SCALE), so scale it proportionally.
+        float shadowScale = (MODEL_SCALE <= 0f) ? 1f : (scale / MODEL_SCALE);
+        this.shadowRadius = this.baseShadowRadius * shadowScale;
 
         // Render using GeckoLib's renderer (handles bones, animations, textures, etc.)
         super.render(entity, entityYaw, partialTicks, poseStack, bufferSource, packedLight);
+
         // Draw AI debug overlay (client-only)
         renderAiDebug(entity, poseStack, bufferSource, packedLight);
     }
@@ -161,5 +173,4 @@ public class PikachuMaleRenderer extends GeoEntityRenderer<PikachuMaleMob> {
 
         poseStack.popPose();
     }
-
 }

@@ -21,6 +21,11 @@ public final class CatoMobSpeciesInfoBuilder {
     private CatoMobSizeCategory sizeCategory = CatoMobSizeCategory.SMALL;
 
     // -----------------------------
+    // 1.5) Render (cosmetic)
+    // -----------------------------
+    private float shadowRadius = 0.5F;
+
+    // -----------------------------
     // 2) Core attributes
     // -----------------------------
     private double maxHealth = 10.0D;
@@ -28,6 +33,12 @@ public final class CatoMobSpeciesInfoBuilder {
     private double movementSpeed = 0.25D;
     private double followRange = 16.0D;
     private double gravity = 0.08D;
+
+    // -----------------------------
+    // 2.5) Retaliation / anger
+    // -----------------------------
+    private boolean retaliateWhenAngered = true;
+    private int retaliationDurationTicks = 180; // 9s default
 
     // -----------------------------
     // 3) Combat timing
@@ -152,6 +163,21 @@ public final class CatoMobSpeciesInfoBuilder {
         return this;
     }
 
+    // ---- NEW: render/size knobs ----
+
+    public CatoMobSpeciesInfoBuilder shadow(float radius) {
+        this.shadowRadius = Math.max(0.0F, radius);
+        return this;
+    }
+
+    // ---- NEW: retaliation knobs ----
+
+    public CatoMobSpeciesInfoBuilder retaliation(boolean enabled, int durationTicks) {
+        this.retaliateWhenAngered = enabled;
+        this.retaliationDurationTicks = Math.max(0, durationTicks);
+        return this;
+    }
+
     public CatoMobSpeciesInfoBuilder core(double maxHealth, double attackDamage,
                                           double movementSpeed, double followRange, double gravity) {
         this.maxHealth = maxHealth;
@@ -177,23 +203,11 @@ public final class CatoMobSpeciesInfoBuilder {
         return this;
     }
 
-    /**
-     * Simple toggle only (kept for convenience/backward usage).
-     * You can still optionally call attackAnimMoveWindow(...) to set delay/stop.
-     */
     public CatoMobSpeciesInfoBuilder moveDuringAttackAnimation(boolean allowMove) {
         this.moveDuringAttackAnimation = allowMove;
         return this;
     }
 
-    /**
-     * Attack animation movement window config.
-     *
-     * @param startDelayTicks delay before movement starts (>=0). Only meaningful when moveDuringAttackAnimation == true.
-     * @param stopAfterTicks  optional stop limit:
-     *                        - if moveDuringAttackAnimation == true: <=0 means "never stop" (move until animation ends)
-     *                        - if moveDuringAttackAnimation == false: >0 means "allow movement for first N ticks, then root"
-     */
     public CatoMobSpeciesInfoBuilder attackMoveWindow(int startDelayTicks, int stopAfterTicks) {
         this.attackMoveStartDelayTicks = startDelayTicks;
         this.attackMoveStopAfterTicks = stopAfterTicks;
@@ -361,7 +375,6 @@ public final class CatoMobSpeciesInfoBuilder {
         // ---- Attack animation movement window safety ----
         int moveDelay = Math.max(0, this.attackMoveStartDelayTicks);
         int moveStopAfter = this.attackMoveStopAfterTicks; // keep sign; <=0 is meaningful
-        // If stopAfter is set, ensure it isn't earlier than delay (or the window would be empty)
         if (moveStopAfter > 0 && moveStopAfter < moveDelay) {
             moveStopAfter = moveDelay;
         }
@@ -387,9 +400,18 @@ public final class CatoMobSpeciesInfoBuilder {
 
         Set<EntityType<?>> buddyTypes = preferBuddies ? Set.copyOf(this.sleepBuddyTypes) : Collections.emptySet();
 
+        // ---- visual safety ----
+        float shadow = Math.max(0.0F, this.shadowRadius);
+
+        boolean retaliate = this.retaliateWhenAngered;
+        int retaliationTicks = Math.max(0, this.retaliationDurationTicks);
+
         return new CatoMobSpeciesInfo(
                 // 1) Identity
                 movementType, temperament, sizeCategory,
+
+                // 1.5) Render / size
+                shadow,
 
                 // 2) Core
                 Math.max(1.0D, maxHealth),
@@ -397,6 +419,10 @@ public final class CatoMobSpeciesInfoBuilder {
                 Math.max(0.0D, movementSpeed),
                 Math.max(0.0D, followRange),
                 gravity,
+
+                // 2.5) Retaliation
+                retaliate,
+                retaliationTicks,
 
                 // 3) Combat
                 Math.max(0.0D, attackTriggerRange),

@@ -9,10 +9,7 @@ import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.damagesource.DamageSource;
-import net.minecraft.world.entity.AgeableMob;
-import net.minecraft.world.entity.EntityType;
-import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.*;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.ai.goal.*;
@@ -24,6 +21,10 @@ import net.minecraft.world.item.crafting.Ingredient;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
+import software.bernie.geckolib.animatable.GeoEntity;
+import software.bernie.geckolib.animation.AnimationState;
+import software.bernie.geckolib.animation.PlayState;
+import software.bernie.geckolib.animation.RawAnimation;
 
 import java.util.*;
 
@@ -83,7 +84,16 @@ public abstract class CatoBaseMob extends Animal {
     protected boolean canBreed = false;
 
     // ================================================================
-    // 2.5) WATER MOVEMENT COMPONENT (travel() helpers)
+    // 3) VISUALS + HITBOX (species-driven)
+    // ================================================================
+
+    /** Renderer reads this (you should apply it in your GeoEntityRenderer). */
+    public float getShadowRadius() {
+        return Math.max(0f, getSpeciesInfo().shadowRadius());
+    }
+
+    // ================================================================
+    // 4) WATER MOVEMENT COMPONENT (travel() helpers)
     // ================================================================
 
     @Nullable
@@ -109,7 +119,7 @@ public abstract class CatoBaseMob extends Animal {
     }
 
     // ================================================================
-    // 3) HOME POSITION (used by wandering / sleep search bounds)
+    // 5) HOME POSITION (used by wandering / sleep search bounds)
     // ================================================================
 
     /**
@@ -126,7 +136,7 @@ public abstract class CatoBaseMob extends Animal {
     public double getHomeRadius() { return getSpeciesInfo().homeRadius(); }
 
     // ================================================================
-    // 4) SYNCED DATA (client visuals)
+    // 6) SYNCED DATA (client visuals)
     // ================================================================
 
     /** Server authoritative sleeping flag (client uses it for animations). */
@@ -178,10 +188,12 @@ public abstract class CatoBaseMob extends Animal {
     public boolean isVisuallyAngry() { return this.entityData.get(DATA_VISUALLY_ANGRY); }
     protected void setVisuallyAngry(boolean angry) { this.entityData.set(DATA_VISUALLY_ANGRY, angry); }
 
-    public boolean isAiDebugEnabled() {return this.entityData.get(DATA_DEBUG_AI); }
+    public boolean isAiDebugEnabled() { return this.entityData.get(DATA_DEBUG_AI); }
 
-    public void setAiDebugEnabled(boolean enabled) { this.entityData.set(DATA_DEBUG_AI, enabled);
-        if (!enabled) { this.entityData.set(DATA_DEBUG_AI_TEXT, ""); }}
+    public void setAiDebugEnabled(boolean enabled) {
+        this.entityData.set(DATA_DEBUG_AI, enabled);
+        if (!enabled) { this.entityData.set(DATA_DEBUG_AI_TEXT, ""); }
+    }
 
     public String getAiDebugText() { return this.entityData.get(DATA_DEBUG_AI_TEXT); }
 
@@ -221,7 +233,7 @@ public abstract class CatoBaseMob extends Animal {
         int roofMax = Math.max(1, info.sleepSearchCeilingScanMaxBlocks());
         boolean roofedHere = info.sleepRequiresRoof() && this.isRoofed(this.blockPosition(), roofMax);
 
-        boolean desire = hasSleepDesire(); // your existing API
+        boolean desire = hasSleepDesire();
         boolean searching = isSleepSearching();
         boolean cooldown = isSleepSearchOnCooldown();
 
@@ -290,7 +302,6 @@ public abstract class CatoBaseMob extends Animal {
     private List<String> dumpGoalsSafe(GoalSelector selector) {
         try {
             // 1) Best case: GoalSelector has getAvailableGoals()
-            // Many versions expose this; if your environment has it, this path is clean.
             var m = selector.getClass().getMethod("getAvailableGoals");
             Object result = m.invoke(selector);
             if (result instanceof Set<?> set) {
@@ -305,7 +316,6 @@ public abstract class CatoBaseMob extends Animal {
                 f.setAccessible(true);
                 Object val = f.get(selector);
                 if (val instanceof Set<?> set && !set.isEmpty()) {
-                    // We assume this is the wrapped goals set.
                     return dumpWrappedGoalSet(set);
                 }
             }
@@ -321,10 +331,6 @@ public abstract class CatoBaseMob extends Animal {
 
         for (Object w : wrappedGoalSet) {
             try {
-                // WrappedGoal-like object:
-                // - getPriority() or priority field
-                // - isRunning() or isRunning field
-                // - getGoal() returns Goal
                 int prio = 0;
                 boolean running = false;
                 Goal goal = null;
@@ -376,9 +382,9 @@ public abstract class CatoBaseMob extends Animal {
         return out;
     }
 
-    // ================================================================
-    // 5) AGGRESSION / RETALIATION (server-side)
-    // ================================================================
+// ================================================================
+// 7) AGGRESSION / RETALIATION (server-side)
+// ================================================================
 
     /**
      * How long (ticks) the mob should remain angry after being hurt.
@@ -387,8 +393,24 @@ public abstract class CatoBaseMob extends Animal {
      */
     protected int angerTime = 0;
 
+    /**
+     * Whether this temperament category is allowed to retaliate at all.
+     * (Temperament still decides the "type" of mob; species decides the numbers.)
+     */
+    protected boolean temperamentAllowsRetaliation(CatoMobTemperament t) {
+        return t == CatoMobTemperament.NEUTRAL_RETALIATE_SHORT
+                || t == CatoMobTemperament.NEUTRAL_RETALIATE_LONG
+                || t == CatoMobTemperament.HOSTILE;
+    }
+
+    /** Pull the anger duration from species info (single source of truth). */
+    protected int getConfiguredAngerTicks(CatoMobSpeciesInfo info) {
+        if (!info.retaliateWhenAngered()) return 0;
+        return Math.max(0, info.retaliationDurationTicks());
+    }
+
     // ================================================================
-    // 6) TIMED ATTACK SYSTEM (server-side)
+    // 8) TIMED ATTACK SYSTEM (server-side)
     // ================================================================
 
     /**
@@ -407,7 +429,7 @@ public abstract class CatoBaseMob extends Animal {
     protected int attackAnimTicksRemaining = 0;
 
     // ================================================================
-    // 7) SLEEP SYSTEM STATE (server-only)
+    // 9) SLEEP SYSTEM STATE (server-only)
     // ================================================================
 
     /** Current sleep duration timer. Decrements while sleeping; when 0 we may extend or wake. */
@@ -454,7 +476,7 @@ public abstract class CatoBaseMob extends Animal {
     }
 
     // ================================================================
-    // 7.5) BLINK + BLINK HELPER
+    // 9.5) BLINK + BLINK HELPER
     // ================================================================
 
     @Nullable
@@ -472,8 +494,36 @@ public abstract class CatoBaseMob extends Animal {
         return !this.isSleeping();
     }
 
+    protected final <E extends GeoEntity> PlayState blinkController(AnimationState<E> state, RawAnimation blinkAnim) {
+        if (!this.level().isClientSide) return PlayState.STOP;
+
+        var blink = this.blink();
+        if (!blink.isBlinking()) return PlayState.STOP;
+
+        if (blink.consumeBlinkJustStarted()) {
+            state.getController().forceAnimationReset();
+            state.getController().setAnimation(blinkAnim);
+        }
+
+        return PlayState.CONTINUE;
+    }
+
     // ================================================================
-    // 8) CONSTRUCTION + SUBCLASS CONFIG HELPERS
+    // 9.6) SIMPLE OVERLAY HELPER
+    // ================================================================
+
+    protected final <E extends GeoEntity> PlayState overlayController(
+            AnimationState<E> state,
+            boolean enabled,
+            RawAnimation anim
+    ) {
+        if (!enabled) return PlayState.STOP;
+        state.setAndContinue(anim);
+        return PlayState.CONTINUE;
+    }
+
+    // ================================================================
+    // 10) CONSTRUCTION + SUBCLASS CONFIG HELPERS
     // ================================================================
 
     protected CatoBaseMob(EntityType<? extends Animal> type, Level level) {
@@ -491,7 +541,7 @@ public abstract class CatoBaseMob extends Animal {
     }
 
     // ================================================================
-    // 9) ANIMATION / BEHAVIOR HOOKS (optional overrides)
+    // 11) ANIMATION / BEHAVIOR HOOKS (optional overrides)
     // ================================================================
 
     protected void onAttackAnimationStart(LivingEntity target) { }
@@ -506,21 +556,6 @@ public abstract class CatoBaseMob extends Animal {
 
     /**
      * Whether navigation movement is allowed THIS TICK while an attack animation is active.
-     * Uses:
-     * - info.moveDuringAttackAnimation()
-     * - info.attackMoveStartDelayTicks()
-     * - info.attackMoveStopAfterTicks()
-     *
-     * Semantics:
-     *  A) moveDuringAttackAnimation == true:
-     *     - root until age >= startDelay
-     *     - if stopAfter > 0: allow movement while age < stopAfter
-     *       (so: [startDelay .. stopAfter-1] is moving window)
-     *     - if stopAfter <= 0: allow movement until animation ends
-     *
-     *  B) moveDuringAttackAnimation == false:
-     *     - root always, EXCEPT:
-     *     - if stopAfter > 0: allow movement only while age < stopAfter (early-move window)
      */
     public boolean canMoveDuringCurrentAttackAnimTick() {
         if (!this.isAttacking() || this.attackAnimTicksRemaining <= 0) return true;
@@ -532,23 +567,16 @@ public abstract class CatoBaseMob extends Animal {
         int stopAfter = info.attackMoveStopAfterTicks(); // can be <= 0 intentionally
 
         if (info.moveDuringAttackAnimation()) {
-            // must wait until delay has passed
             if (age < startDelay) return false;
-
-            // optional stop window (if > 0)
             if (stopAfter > 0 && age >= stopAfter) return false;
-
             return true;
         } else {
-            // normally rooted
             if (stopAfter > 0) {
-                // allow only for early window
                 return age < stopAfter;
             }
             return false;
         }
     }
-
 
     protected void onWanderStart(boolean running) { }
     protected void onWanderStop() { }
@@ -558,7 +586,7 @@ public abstract class CatoBaseMob extends Animal {
     protected void onChaseStop() { }
 
     // ================================================================
-    // 10) SLEEP HELPERS (start/wake)
+    // 12) SLEEP HELPERS (start/wake)
     // ================================================================
 
     /** Instant wake: clears sleeping + sleep timer and enforces attempt cooldown. */
@@ -608,7 +636,7 @@ public abstract class CatoBaseMob extends Animal {
     }
 
     // ================================================================
-    // 11) SLEEP ATTEMPT PACING (attempt-based, not per-tick)
+    // 13) SLEEP ATTEMPT PACING (attempt-based, not per-tick)
     // ================================================================
 
     protected int sleepAttemptIntervalTicks() {
@@ -638,7 +666,7 @@ public abstract class CatoBaseMob extends Animal {
     }
 
     // ================================================================
-    // 12) TIMED ATTACK ENTRY POINT
+    // 14) TIMED ATTACK ENTRY POINT
     // ================================================================
 
     /**
@@ -687,7 +715,7 @@ public abstract class CatoBaseMob extends Animal {
     }
 
     // ================================================================
-    // 12.5) MOVEMENT HOOK (shared water smoothing)
+    // 14.5) MOVEMENT HOOK (shared water smoothing)
     // ================================================================
 
     @Override
@@ -710,7 +738,7 @@ public abstract class CatoBaseMob extends Animal {
     }
 
     // ================================================================
-    // 13) GOAL REGISTRATION (AI wiring)
+    // 15) GOAL REGISTRATION (AI wiring)
     // ================================================================
 
     @Override
@@ -801,7 +829,6 @@ public abstract class CatoBaseMob extends Animal {
         this.targetSelector.addGoal(prio.targetHurtBy, new CatoGatedHurtByTargetGoal(this));
 
         this.goalSelector.addGoal(prio.meleeAttack, new CatoMeleeAttackGoal(this, chaseSpeed, true, cooldown));
-
     }
 
     protected void setupHostileGoals() {
@@ -814,11 +841,10 @@ public abstract class CatoBaseMob extends Animal {
                 new NearestAttackableTargetGoal<>(this, Player.class, true));
 
         this.goalSelector.addGoal(prio.meleeAttack, new CatoMeleeAttackGoal(this, chaseSpeed, false, cooldown));
-
     }
 
     // ================================================================
-    // 14) DAMAGE HOOK -> WAKE + SET ANGER STATE
+    // 16) DAMAGE HOOK -> WAKE + SET ANGER STATE (species-driven)
     // ================================================================
 
     @Override
@@ -830,31 +856,24 @@ public abstract class CatoBaseMob extends Animal {
 
         boolean result = super.hurt(source, amount);
 
-        // Retaliation / anger setup after taking damage
-        if (!level().isClientSide && result) {
-            CatoMobTemperament temperament = getSpeciesInfo().temperament();
+        // Retaliation / anger setup after taking damage (species-driven)
+        if (!this.level().isClientSide && result && source.getEntity() instanceof LivingEntity attacker) {
+            CatoMobSpeciesInfo info = getSpeciesInfo();
 
-            if (source.getEntity() instanceof LivingEntity attacker) {
-                switch (temperament) {
-                    case NEUTRAL_RETALIATE_SHORT -> {
-                        this.angerTime = 180;
-                        this.setTarget(attacker);
-                        this.setLastHurtByMob(attacker);
-                        this.setAggressive(true);
-                    }
-                    case NEUTRAL_RETALIATE_LONG -> {
-                        this.angerTime = 400;
-                        this.setTarget(attacker);
-                        this.setLastHurtByMob(attacker);
-                        this.setAggressive(true);
-                    }
-                    case HOSTILE -> {
-                        this.angerTime = 800;
-                        this.setTarget(attacker);
-                        this.setLastHurtByMob(attacker);
-                        this.setAggressive(true);
-                    }
-                    case PASSIVE -> { }
+            // Temperament decides whether this "type" retaliates at all.
+            boolean temperamentAllowsRetaliation =
+                    info.temperament() == CatoMobTemperament.NEUTRAL_RETALIATE_SHORT
+                            || info.temperament() == CatoMobTemperament.NEUTRAL_RETALIATE_LONG
+                            || info.temperament() == CatoMobTemperament.HOSTILE;
+
+            // Species decides if retaliation is enabled + how long.
+            if (temperamentAllowsRetaliation && info.retaliateWhenAngered()) {
+                int ticks = Math.max(0, info.retaliationDurationTicks());
+                if (ticks > 0) {
+                    this.angerTime = ticks;
+                    this.setTarget(attacker);
+                    this.setLastHurtByMob(attacker);
+                    this.setAggressive(true);
                 }
             }
         }
@@ -863,7 +882,7 @@ public abstract class CatoBaseMob extends Animal {
     }
 
     // ================================================================
-    // 15) SLEEP TICK (server-side state machine)
+    // 17) SLEEP TICK (server-side state machine)
     // ================================================================
 
     /**
@@ -1006,7 +1025,7 @@ public abstract class CatoBaseMob extends Animal {
     }
 
     // ================================================================
-    // 16) ROOF HELPERS (used by sleep + sleep search goal)
+    // 18) ROOF HELPERS (used by sleep + sleep search goal)
     // ================================================================
 
     /** @return distance to first non-air, non-fluid block above pos; -1 if none within maxHeight */
@@ -1029,7 +1048,7 @@ public abstract class CatoBaseMob extends Animal {
     }
 
     // ================================================================
-    // 17) SLEEP SPOT MEMORY (used by SleepSearchGoal)
+    // 19) SLEEP SPOT MEMORY (used by SleepSearchGoal)
     // ================================================================
 
     // Defaults for “reasonable memory”; actual size/strikes are species-driven.
@@ -1119,30 +1138,14 @@ public abstract class CatoBaseMob extends Animal {
     }
 
     // ================================================================
-    // 17.5) FAILED SLEEP SPOT BLACKLIST (covers non-remembered spots too)
+    // 19.5) FAILED SLEEP SPOT BLACKLIST (covers non-remembered spots too)
     // ================================================================
 
-    /**
-     * Blacklist for sleep spots that repeatedly fail to path / get stuck.
-     * Key: BlockPos.asLong()
-     * Value: strike count (small, capped)
-     *
-     * This complements rememberedSleepSpots:
-     * - rememberedSleepSpots strikes only work for remembered entries
-     * - blacklist works for ANY attempted position (most important!)
-     */
     private final HashMap<Long, Byte> failedSleepSpotStrikes = new HashMap<>();
 
-    /** Cap strike values to avoid overflow / permanent bans. */
     private static final int SLEEP_SPOT_BLACKLIST_MAX_STRIKES = 6;
-
-    /**
-     * Strike threshold after which a spot is considered "blacklisted" and should be skipped.
-     * Tune: 2-3 is usually enough.
-     */
     private static final int SLEEP_SPOT_BLACKLIST_THRESHOLD = 3;
 
-    /** Decay settings (keep it slow; this is just to prevent permanent bans). */
     private static final int SLEEP_SPOT_BLACKLIST_DECAY_INTERVAL_TICKS = 200; // 10s
     private int sleepSpotBlacklistDecayTicker = 0;
 
@@ -1160,7 +1163,6 @@ public abstract class CatoBaseMob extends Animal {
         return failedSleepSpotStrikes.getOrDefault(pos.asLong(), (byte) 0);
     }
 
-    /** Optional: clear all blacklist (debug). */
     public void clearSleepSpotBlacklist() {
         if (this.level().isClientSide) return;
         failedSleepSpotStrikes.clear();
@@ -1172,7 +1174,6 @@ public abstract class CatoBaseMob extends Animal {
         if (++sleepSpotBlacklistDecayTicker < SLEEP_SPOT_BLACKLIST_DECAY_INTERVAL_TICKS) return;
         sleepSpotBlacklistDecayTicker = 0;
 
-        // Decrease every strike by 1; remove at 0
         var it = failedSleepSpotStrikes.entrySet().iterator();
         while (it.hasNext()) {
             var e = it.next();
@@ -1183,7 +1184,7 @@ public abstract class CatoBaseMob extends Animal {
     }
 
     // ================================================================
-    // 18) MAIN SERVER TICK (sleep + anger + timed attack damage)
+    // 20) MAIN SERVER TICK (sleep + anger + timed attack damage)
     // ================================================================
     @Override
     public void aiStep() {
@@ -1197,125 +1198,120 @@ public abstract class CatoBaseMob extends Animal {
             return;
         }
 
-        if (!level().isClientSide) {
+        // ------------------------------------------------------------
+        // Decay failed sleep-spot blacklist (slow, server-only)
+        // ------------------------------------------------------------
+        tickSleepSpotBlacklistDecayServer();
 
-            // ------------------------------------------------------------
-            // Decay failed sleep-spot blacklist (slow, server-only)
-            // ------------------------------------------------------------
-            tickSleepSpotBlacklistDecayServer();
+        // Decrement desire window (server-only)
+        if (sleepDesireTicks > 0) {
+            sleepDesireTicks--;
+        }
 
-            // Decrement desire window (server-only)
-            if (sleepDesireTicks > 0) {
-                sleepDesireTicks--;
-            }
+        // Capture home position once if species uses home radius behavior
+        if (this.homePos == null && this.shouldStayWithinHomeRadius()) {
+            this.homePos = this.blockPosition();
+        }
 
-            // Capture home position once if species uses home radius behavior
-            if (this.homePos == null && this.shouldStayWithinHomeRadius()) {
-                this.homePos = this.blockPosition();
-            }
+        // Sleep system
+        tickSleepServer();
 
-            // Sleep system
-            tickSleepServer();
+        // While sleeping: no combat logic should run
+        if (this.isSleeping()) {
+            clearAttackState();
+            this.setTarget(null);
+            this.setLastHurtByMob(null);
+            this.setAggressive(false);
+            // keep debug updating even while sleeping
+            tickAiDebugServer();
+            return;
+        }
 
-            // While sleeping: no combat logic should run
-            if (this.isSleeping()) {
-                clearAttackState();
-                this.setTarget(null);
-                this.setLastHurtByMob(null);
-                this.setAggressive(false);
-                // keep debug updating even while sleeping
-                tickAiDebugServer();
-                return;
-            }
+        // Anger countdown and cleanup
+        if (angerTime > 0) {
+            angerTime--;
+        } else if (getTarget() != null) {
+            this.setTarget(null);
+            this.setAggressive(false);
+            this.setLastHurtByMob(null);
 
-            // Anger countdown and cleanup
-            if (angerTime > 0) {
-                angerTime--;
-            } else if (getTarget() != null) {
-                this.setTarget(null);
-                this.setAggressive(false);
-                this.setLastHurtByMob(null);
+            // stop leftover chase path
+            this.getNavigation().stop();
+            this.setMoveMode(MOVE_IDLE);
 
-                // stop leftover chase path
-                this.getNavigation().stop();
-                this.setMoveMode(MOVE_IDLE);
+            clearAttackState();
 
-                clearAttackState();
+            // NOTE: old versions used to forcibly stop HurtBy goal here.
+            // If you still need that behavior, keep it behind a safe reflection helper
+            // like you already do for goal dumping.
+        }
 
-                this.targetSelector.getAvailableGoals().forEach(w -> {
-                    if (w.getGoal() instanceof CatoGatedHurtByTargetGoal) {
-                        w.stop();
+        // Sync "visual angry" to clients
+        boolean angryNow = (this.angerTime > 0 && this.getTarget() != null);
+        this.setVisuallyAngry(angryNow);
+
+        // If target is gone, don’t keep attack timers running
+        if (this.getTarget() == null && (this.attackTicksUntilHit > 0 || this.attackAnimTicksRemaining > 0)) {
+            clearAttackState();
+        }
+
+        // Deal timed hit
+        if (this.attackTicksUntilHit > 0) {
+            this.attackTicksUntilHit--;
+
+            if (this.attackTicksUntilHit == 0) {
+                if (this.queuedAttackTarget != null && this.queuedAttackTarget.isAlive()) {
+                    double hitRange = getSpeciesInfo().attackHitRange();
+                    if (hitRange <= 0.0D) hitRange = 2.0D;
+
+                    double maxHitDistSqr = hitRange * hitRange;
+
+                    if (this.distanceToSqr(this.queuedAttackTarget) <= maxHitDistSqr) {
+                        this.doHurtTarget(this.queuedAttackTarget);
                     }
-                });
-            }
-
-            // Sync "visual angry" to clients
-            boolean angryNow = (this.angerTime > 0 && this.getTarget() != null);
-            this.setVisuallyAngry(angryNow);
-
-            // If target is gone, don’t keep attack timers running
-            if (this.getTarget() == null && (this.attackTicksUntilHit > 0 || this.attackAnimTicksRemaining > 0)) {
-                clearAttackState();
-            }
-
-            // Deal timed hit
-            if (this.attackTicksUntilHit > 0) {
-                this.attackTicksUntilHit--;
-
-                if (this.attackTicksUntilHit == 0) {
-                    if (this.queuedAttackTarget != null && this.queuedAttackTarget.isAlive()) {
-                        double hitRange = getSpeciesInfo().attackHitRange();
-                        if (hitRange <= 0.0D) hitRange = 2.0D;
-
-                        double maxHitDistSqr = hitRange * hitRange;
-
-                        if (this.distanceToSqr(this.queuedAttackTarget) <= maxHitDistSqr) {
-                            this.doHurtTarget(this.queuedAttackTarget);
-                        }
-                    }
-
-                    // Consume queued target after hit attempt
-                    this.queuedAttackTarget = null;
                 }
+
+                // Consume queued target after hit attempt
+                this.queuedAttackTarget = null;
             }
+        }
 
-            // Track attack animation duration
-            if (this.attackAnimTicksRemaining > 0) {
-                this.attackAnimTicksRemaining--;
+        // Track attack animation duration
+        if (this.attackAnimTicksRemaining > 0) {
+            this.attackAnimTicksRemaining--;
 
-                // increment "age since attack started" while animation is active
-                this.attackAnimAgeTicks++;
+            // increment "age since attack started" while animation is active
+            this.attackAnimAgeTicks++;
 
-                if (this.attackAnimTicksRemaining == 0) {
-                    // IMPORTANT: stop "attacking" flag so GeckoLib returns to idle/walk/run
-                    this.setAttacking(false);
-                    this.onAttackAnimationEnd();
+            if (this.attackAnimTicksRemaining == 0) {
+                // IMPORTANT: stop "attacking" flag so GeckoLib returns to idle/walk/run
+                this.setAttacking(false);
+                this.onAttackAnimationEnd();
 
-                    // reset age when the animation ends
-                    this.attackAnimAgeTicks = 0;
-                }
-            } else {
-                // Safety: if we're not in an attack animation, age must be 0
+                // reset age when the animation ends
                 this.attackAnimAgeTicks = 0;
             }
-
-            // While angry: force look-at target (clamped by max head rot)
-            if (this.angerTime > 0 && this.getTarget() != null) {
-                int maxYaw = this.getMaxHeadYRot();
-                int maxPitch = this.getMaxHeadXRot();
-
-                if (maxYaw != 0 || maxPitch != 0) {
-                    this.getLookControl().setLookAt(this.getTarget(), (float) maxYaw, (float) maxPitch);
-                }
-            }
-
-            // Debug overlay snapshot
-            tickAiDebugServer();
+        } else {
+            // Safety: if we're not in an attack animation, age must be 0
+            this.attackAnimAgeTicks = 0;
         }
+
+        // While angry: force look-at target (clamped by max head rot)
+        if (this.angerTime > 0 && this.getTarget() != null) {
+            int maxYaw = this.getMaxHeadYRot();
+            int maxPitch = this.getMaxHeadXRot();
+
+            if (maxYaw != 0 || maxPitch != 0) {
+                this.getLookControl().setLookAt(this.getTarget(), (float) maxYaw, (float) maxPitch);
+            }
+        }
+
+        // Debug overlay snapshot
+        tickAiDebugServer();
     }
 
     // ================================================================
-    // 19) ATTRIBUTES (used by your entity registration)
+    // 21) ATTRIBUTES (used by your entity registration)
     // ================================================================
 
     public static AttributeSupplier.Builder createAttributesFor(CatoMobSpeciesInfo info) {
@@ -1328,7 +1324,7 @@ public abstract class CatoBaseMob extends Animal {
     }
 
     // ================================================================
-    // 20) FOOD / BREEDING STUBS (subclasses usually override)
+    // 22) FOOD / BREEDING STUBS (subclasses usually override)
     // ================================================================
 
     @Override

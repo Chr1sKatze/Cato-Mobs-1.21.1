@@ -37,6 +37,11 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
                             CatoMobTemperament.NEUTRAL_RETALIATE_SHORT,
                             CatoMobSizeCategory.SMALL
                     )
+                    // render
+                    .shadow(2.50f)
+                    // retaliation
+                    .retaliation(false,0)
+                    // Core Tuning
                     .core(8.0D, 1.0D, 0.30D, 16.0D, 0.08D)
                     .combat(1.0D, 4.0D, 70, 60, 30)
                     .chaseSpeed(1.60D)
@@ -169,36 +174,11 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
         return PlayState.CONTINUE;
     }
 
-    private <E extends GeoEntity> PlayState angryOverlayController(AnimationState<E> state) {
-        PikachuMaleMob mob = (PikachuMaleMob) state.getAnimatable();
-        if (mob.isVisuallyAngry()) {
-            state.setAndContinue(ANGRY);
-            return PlayState.CONTINUE;
-        }
-        return PlayState.STOP;
-    }
-
-    private <E extends GeoEntity> PlayState blinkController(AnimationState<E> state) {
-        PikachuMaleMob mob = (PikachuMaleMob) state.getAnimatable();
-
-        if (!mob.level().isClientSide) return PlayState.STOP;
-
-        var blink = mob.blink(); // <- comes from CatoBaseMob now
-        if (!blink.isBlinking()) return PlayState.STOP;
-
-        if (blink.consumeBlinkJustStarted()) {
-            state.getController().forceAnimationReset();
-            state.getController().setAnimation(BLINK);
-        }
-
-        return PlayState.CONTINUE;
-    }
-
     @Override
     public void registerControllers(AnimatableManager.ControllerRegistrar controllers) {
         controllers.add(new AnimationController<>(this, "main", 5, this::movementController));
-        controllers.add(new AnimationController<>(this, "angry", 0, this::angryOverlayController));
-        controllers.add(new AnimationController<>(this, "blink", 0, this::blinkController));
+        controllers.add(new AnimationController<>(this, "angry", 0, s -> this.overlayController(s, this.isVisuallyAngry(), ANGRY)));
+        controllers.add(new AnimationController<>(this, "blink", 0, s -> this.blinkController(s, BLINK)));
     }
 
     // ================================================================

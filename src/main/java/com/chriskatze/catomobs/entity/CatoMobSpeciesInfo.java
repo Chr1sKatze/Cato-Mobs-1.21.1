@@ -18,6 +18,10 @@ public record CatoMobSpeciesInfo(
         CatoMobSizeCategory sizeCategory,
 
         // ================================================================
+        // 1.5) RENDER (cosmetic)
+        // ================================================================
+        float shadowRadius,
+        // ================================================================
         // 2) CORE ATTRIBUTES (fed into AttributeSupplier)
         // ================================================================
         double maxHealth,
@@ -25,6 +29,12 @@ public record CatoMobSpeciesInfo(
         double movementSpeed,   // vanilla attribute (NOT wander speed)
         double followRange,
         double gravity,
+
+        // ================================================================
+        // 2.5) RETALIATION / ANGER (neutral mobs)
+        // ================================================================
+        boolean retaliateWhenAngered,
+        int retaliationDurationTicks,
 
         // ================================================================
         // 3) COMBAT / ATTACK TIMING (timed-attack system)

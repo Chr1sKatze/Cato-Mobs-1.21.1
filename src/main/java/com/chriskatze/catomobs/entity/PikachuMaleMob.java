@@ -1,7 +1,6 @@
 package com.chriskatze.catomobs.entity;
 
 import com.chriskatze.catomobs.entity.base.CatoBaseMob;
-import com.chriskatze.catomobs.entity.component.BlinkComponent;
 import com.chriskatze.catomobs.registry.CMEntities;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.AgeableMob;
@@ -126,25 +125,7 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
     }
 
     // ================================================================
-    // 3) CLIENT COSMETICS (BLINK COMPONENT)
-    // ================================================================
-
-    /**
-     * Client-only cosmetic helper.
-     * Lazily created on the client the first time we tick.
-     */
-    @Nullable
-    private BlinkComponent blink;
-
-    private BlinkComponent blink() {
-        if (blink == null) {
-            blink = new BlinkComponent(this.getRandom());
-        }
-        return blink;
-    }
-
-    // ================================================================
-    // 4) GECKOLIB ANIMATION DEFINITIONS
+    // 3) GECKOLIB ANIMATION DEFINITIONS
     // ================================================================
 
     private static final RawAnimation IDLE   = RawAnimation.begin().thenLoop("animation.pikachu.ground_idle");
@@ -158,7 +139,7 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
     private static final RawAnimation SLEEP  = RawAnimation.begin().thenLoop("animation.pikachu.sleep");
 
     // ================================================================
-    // 5) GECKOLIB CONTROLLERS
+    // 4) GECKOLIB CONTROLLERS
     // ================================================================
 
     private <E extends GeoEntity> PlayState movementController(AnimationState<E> state) {
@@ -202,7 +183,7 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
 
         if (!mob.level().isClientSide) return PlayState.STOP;
 
-        BlinkComponent blink = mob.blink();
+        var blink = mob.blink(); // <- comes from CatoBaseMob now
         if (!blink.isBlinking()) return PlayState.STOP;
 
         if (blink.consumeBlinkJustStarted()) {
@@ -221,21 +202,13 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
     }
 
     // ================================================================
-    // 6) LIFECYCLE & HOOKS
+    // 5) LIFECYCLE & HOOKS
     // ================================================================
 
     private final AnimatableInstanceCache cache = new SingletonAnimatableInstanceCache(this);
 
     public PikachuMaleMob(EntityType<? extends CatoBaseMob> type, Level level) {
         super(type, level);
-    }
-
-    @Override
-    public void aiStep() {
-        super.aiStep();
-        if (this.level().isClientSide) {
-            blink().tick();
-        }
     }
 
     @Nullable

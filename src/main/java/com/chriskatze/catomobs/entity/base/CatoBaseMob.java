@@ -1,6 +1,7 @@
 package com.chriskatze.catomobs.entity.base;
 
 import com.chriskatze.catomobs.entity.*;
+import com.chriskatze.catomobs.entity.component.BlinkComponent;
 import com.chriskatze.catomobs.entity.component.WaterMovementComponent;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.syncher.EntityDataAccessor;
@@ -15,7 +16,6 @@ import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.ai.goal.*;
-import net.minecraft.world.entity.ai.goal.target.HurtByTargetGoal;
 import net.minecraft.world.entity.ai.goal.target.NearestAttackableTargetGoal;
 import net.minecraft.world.entity.animal.Animal;
 import net.minecraft.world.entity.player.Player;
@@ -451,6 +451,25 @@ public abstract class CatoBaseMob extends Animal {
 
     public void startSleepSearchCooldown(int ticks) {
         sleepSearchCooldownUntil = this.level().getGameTime() + Math.max(0, ticks);
+    }
+
+    // ================================================================
+    // 7.5) BLINK + BLINK HELPER
+    // ================================================================
+
+    @Nullable
+    private BlinkComponent blink;
+
+    public final BlinkComponent blink() {
+        if (blink == null) {
+            blink = new BlinkComponent(this.getRandom());
+        }
+        return blink;
+    }
+
+    protected boolean allowBlink() {
+        // default rule: no blink while sleeping
+        return !this.isSleeping();
     }
 
     // ================================================================
@@ -1166,10 +1185,17 @@ public abstract class CatoBaseMob extends Animal {
     // ================================================================
     // 18) MAIN SERVER TICK (sleep + anger + timed attack damage)
     // ================================================================
-
     @Override
     public void aiStep() {
         super.aiStep();
+
+        // ------------------------------------------------------------
+        // Client-only cosmetics (blink)
+        // ------------------------------------------------------------
+        if (this.level().isClientSide) {
+            blink().tick(allowBlink());
+            return;
+        }
 
         if (!level().isClientSide) {
 

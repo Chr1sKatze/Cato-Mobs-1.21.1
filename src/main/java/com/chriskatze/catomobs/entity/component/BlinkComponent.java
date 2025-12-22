@@ -83,6 +83,24 @@ public final class BlinkComponent {
         }
     }
 
+    /**
+     * Tick once per client tick, but only if blinking is allowed.
+     * If blinking is disallowed (e.g. sleeping), the blink state is frozen/reset.
+     */
+    public void tick(boolean allowBlink) {
+        if (!allowBlink) {
+            // Immediately stop any active blink and clear one-shot state
+            blinking = false;
+            blinkJustStarted = false;
+            blinkTicksRemaining = 0;
+
+            // Optional but recommended: avoid instant blink right after waking up
+            resetCooldown();
+            return;
+        }
+        tick();
+    }
+
     /** Whether the blink animation should currently be playing. */
     public boolean isBlinking() {
         return blinking;

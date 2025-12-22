@@ -382,9 +382,9 @@ public abstract class CatoBaseMob extends Animal {
         return out;
     }
 
-// ================================================================
-// 7) AGGRESSION / RETALIATION (server-side)
-// ================================================================
+    // ================================================================
+    // 7) AGGRESSION / RETALIATION (server-side)
+    // ================================================================
 
     /**
      * How long (ticks) the mob should remain angry after being hurt.
@@ -393,20 +393,44 @@ public abstract class CatoBaseMob extends Animal {
      */
     protected int angerTime = 0;
 
-    /**
-     * Whether this temperament category is allowed to retaliate at all.
-     * (Temperament still decides the "type" of mob; species decides the numbers.)
-     */
-    protected boolean temperamentAllowsRetaliation(CatoMobTemperament t) {
-        return t == CatoMobTemperament.NEUTRAL_RETALIATE_SHORT
-                || t == CatoMobTemperament.NEUTRAL_RETALIATE_LONG
-                || t == CatoMobTemperament.HOSTILE;
+    // ================================================================
+    // 7.5) FLEE STATE (server-side)
+    // ================================================================
+    private int fleeTicksRemaining = 0;
+    private long fleeCooldownUntil = 0L;
+    private LivingEntity fleeThreat = null;
+
+    public boolean isFleeing() {
+        return !this.level().isClientSide && fleeTicksRemaining > 0;
     }
 
-    /** Pull the anger duration from species info (single source of truth). */
-    protected int getConfiguredAngerTicks(CatoMobSpeciesInfo info) {
-        if (!info.retaliateWhenAngered()) return 0;
-        return Math.max(0, info.retaliationDurationTicks());
+    public LivingEntity getFleeThreat() {
+        return fleeThreat;
+    }
+
+    private boolean isFleeOnCooldown() {
+        return this.level().getGameTime() < fleeCooldownUntil;
+    }
+
+    private void startFlee(LivingEntity threat) {
+        if (this.level().isClientSide) return;
+
+        CatoMobSpeciesInfo info = getSpeciesInfo();
+        if (!info.fleeEnabled()) return;
+        if (info.fleeDurationTicks() <= 0) return;
+        if (isFleeOnCooldown()) return;
+
+        this.fleeThreat = threat;
+        this.fleeTicksRemaining = info.fleeDurationTicks();
+
+        // Flee overrides combat/retaliation while active
+        this.angerTime = 0;
+        this.setTarget(null);
+        this.setAggressive(false);
+        this.setLastHurtByMob(null);
+        clearAttackState();
+
+        this.getNavigation().stop();
     }
 
     // ================================================================
@@ -740,7 +764,6 @@ public abstract class CatoBaseMob extends Animal {
     // ================================================================
     // 15) GOAL REGISTRATION (AI wiring)
     // ================================================================
-
     @Override
     protected void registerGoals() {
         CatoMobSpeciesInfo speciesInfo = getSpeciesInfo();
@@ -758,6 +781,18 @@ public abstract class CatoBaseMob extends Animal {
             }
         }
 
+        // ------------------------------------------------------------
+        // Flee / panic (should override combat + wander)
+        // ------------------------------------------------------------
+        // This goal should internally decide:
+        // - fleeOnHurt -> start fleeing immediately when hit
+        // - fleeOnLowHealth -> start fleeing once HP <= threshold
+        // - duration + cooldown
+        // - override retaliation for NEUTRAL/HOSTILE by clearing target + anger while fleeing
+        if (prio.enableFlee && speciesInfo.fleeEnabled()) {
+            this.goalSelector.addGoal(prio.flee, new CatoFleeGoal(this));
+        }
+
         // Look behavior
         if (prio.enableLookGoals) {
             this.goalSelector.addGoal(prio.lookAtPlayer,
@@ -773,7 +808,7 @@ public abstract class CatoBaseMob extends Animal {
         // Temperament -> combat setup
         switch (speciesInfo.temperament()) {
             case PASSIVE -> setupPassiveGoals();
-            case NEUTRAL_RETALIATE_SHORT, NEUTRAL_RETALIATE_LONG -> setupNeutralGoals();
+            case NEUTRAL -> setupNeutralGoals();
             case HOSTILE -> setupHostileGoals();
         }
 
@@ -825,9 +860,10 @@ public abstract class CatoBaseMob extends Animal {
         double chaseSpeed = getSpeciesInfo().chaseSpeedModifier();
         CatoGoalPriorityProfile prio = getGoalPriorities();
 
-        // Keeps retaliation target behavior more “vanilla stable”
+        // Retaliation target selection (GATED so it won't fire during flee)
         this.targetSelector.addGoal(prio.targetHurtBy, new CatoGatedHurtByTargetGoal(this));
 
+        // Melee attack goal (you should also gate canUse() inside the goal if fleeing — see note below)
         this.goalSelector.addGoal(prio.meleeAttack, new CatoMeleeAttackGoal(this, chaseSpeed, true, cooldown));
     }
 
@@ -836,10 +872,16 @@ public abstract class CatoBaseMob extends Animal {
         double chaseSpeed = getSpeciesInfo().chaseSpeedModifier();
         CatoGoalPriorityProfile prio = getGoalPriorities();
 
+        // Retaliation target selection (species/temperament-gated)
         this.targetSelector.addGoal(prio.targetHurtBy, new CatoGatedHurtByTargetGoal(this));
-        this.targetSelector.addGoal(prio.targetNearestPlayer,
-                new NearestAttackableTargetGoal<>(this, Player.class, true));
 
+        // Nearest-player target selection (hostile-gated; later you can also gate by flee)
+        this.targetSelector.addGoal(
+                prio.targetNearestPlayer,
+                new CatoGatedNearestPlayerTargetGoal(this)
+        );
+
+        // Main melee chase/attack
         this.goalSelector.addGoal(prio.meleeAttack, new CatoMeleeAttackGoal(this, chaseSpeed, false, cooldown));
     }
 
@@ -849,32 +891,36 @@ public abstract class CatoBaseMob extends Animal {
 
     @Override
     public boolean hurt(DamageSource source, float amount) {
-        // Wake on damage if species wants that behavior
+        // Wake sleeping mobs immediately if damage is allowed to wake them
         if (!this.level().isClientSide && getSpeciesInfo().wakeOnDamage()) {
             wakeUp();
         }
 
         boolean result = super.hurt(source, amount);
 
-        // Retaliation / anger setup after taking damage (species-driven)
         if (!this.level().isClientSide && result && source.getEntity() instanceof LivingEntity attacker) {
             CatoMobSpeciesInfo info = getSpeciesInfo();
 
-            // Temperament decides whether this "type" retaliates at all.
-            boolean temperamentAllowsRetaliation =
-                    info.temperament() == CatoMobTemperament.NEUTRAL_RETALIATE_SHORT
-                            || info.temperament() == CatoMobTemperament.NEUTRAL_RETALIATE_LONG
-                            || info.temperament() == CatoMobTemperament.HOSTILE;
+            // ------------------------------------------------------------
+            // 1) FLEE OVERRIDES EVERYTHING
+            // ------------------------------------------------------------
+            if (info.fleeEnabled() && info.fleeOnHurt()) {
+                startFlee(attacker);
+                return result; // IMPORTANT: do NOT retaliate
+            }
 
-            // Species decides if retaliation is enabled + how long.
-            if (temperamentAllowsRetaliation && info.retaliateWhenAngered()) {
-                int ticks = Math.max(0, info.retaliationDurationTicks());
-                if (ticks > 0) {
-                    this.angerTime = ticks;
-                    this.setTarget(attacker);
-                    this.setLastHurtByMob(attacker);
-                    this.setAggressive(true);
-                }
+            // ------------------------------------------------------------
+            // 2) RETALIATION (neutral / hostile only)
+            // ------------------------------------------------------------
+            if (info.retaliateWhenAngered()
+                    && info.retaliationDurationTicks() > 0
+                    && (info.temperament() == CatoMobTemperament.NEUTRAL
+                    || info.temperament() == CatoMobTemperament.HOSTILE)) {
+
+                this.angerTime = info.retaliationDurationTicks();
+                this.setTarget(attacker);
+                this.setLastHurtByMob(attacker);
+                this.setAggressive(true);
             }
         }
 
@@ -1184,8 +1230,8 @@ public abstract class CatoBaseMob extends Animal {
     }
 
     // ================================================================
-    // 20) MAIN SERVER TICK (sleep + anger + timed attack damage)
-    // ================================================================
+// 20) MAIN SERVER TICK (sleep + anger + timed attack damage)
+// ================================================================
     @Override
     public void aiStep() {
         super.aiStep();
@@ -1222,28 +1268,32 @@ public abstract class CatoBaseMob extends Animal {
             this.setTarget(null);
             this.setLastHurtByMob(null);
             this.setAggressive(false);
-            // keep debug updating even while sleeping
             tickAiDebugServer();
             return;
         }
 
+        // ------------------------------------------------------------
         // Anger countdown and cleanup
+        // ------------------------------------------------------------
         if (angerTime > 0) {
             angerTime--;
         } else if (getTarget() != null) {
-            this.setTarget(null);
-            this.setAggressive(false);
-            this.setLastHurtByMob(null);
+            // For HOSTILE mobs, allow normal target AI to manage targets.
+            // For neutral retaliation mobs, we clear when anger ends.
+            if (getSpeciesInfo().temperament() != CatoMobTemperament.HOSTILE) {
+                this.setTarget(null);
+                this.setAggressive(false);
+                this.setLastHurtByMob(null);
 
-            // stop leftover chase path
-            this.getNavigation().stop();
-            this.setMoveMode(MOVE_IDLE);
+                // stop leftover chase path
+                this.getNavigation().stop();
+                this.setMoveMode(MOVE_IDLE);
 
-            clearAttackState();
+                clearAttackState();
 
-            // NOTE: old versions used to forcibly stop HurtBy goal here.
-            // If you still need that behavior, keep it behind a safe reflection helper
-            // like you already do for goal dumping.
+                // IMPORTANT: forcibly stop our gated HurtBy goal (safe reflection; version-tolerant)
+                stopHurtByGoalsSafe();
+            }
         }
 
         // Sync "visual angry" to clients
@@ -1284,15 +1334,11 @@ public abstract class CatoBaseMob extends Animal {
             this.attackAnimAgeTicks++;
 
             if (this.attackAnimTicksRemaining == 0) {
-                // IMPORTANT: stop "attacking" flag so GeckoLib returns to idle/walk/run
                 this.setAttacking(false);
                 this.onAttackAnimationEnd();
-
-                // reset age when the animation ends
                 this.attackAnimAgeTicks = 0;
             }
         } else {
-            // Safety: if we're not in an attack animation, age must be 0
             this.attackAnimAgeTicks = 0;
         }
 
@@ -1308,6 +1354,92 @@ public abstract class CatoBaseMob extends Animal {
 
         // Debug overlay snapshot
         tickAiDebugServer();
+    }
+
+    /**
+     * Forcibly stops any running CatoGatedHurtByTargetGoal entries in targetSelector.
+     *
+     * Why reflection?
+     * GoalSelector internals and wrapper classes vary across versions/mappings.
+     * We try:
+     *  1) selector.getAvailableGoals() if present
+     *  2) otherwise: scan Set fields that look like the internal wrapped-goal set
+     */
+    @SuppressWarnings("unchecked")
+    private void stopHurtByGoalsSafe() {
+        try {
+            // 1) Preferred: public getAvailableGoals()
+            var m = this.targetSelector.getClass().getMethod("getAvailableGoals");
+            Object result = m.invoke(this.targetSelector);
+
+            if (result instanceof Set<?> set) {
+                stopHurtByInWrappedSet(set);
+                return;
+            }
+        } catch (Throwable ignored) { }
+
+        try {
+            // 2) Fallback: find a Set field that likely holds wrapped goals
+            for (var f : this.targetSelector.getClass().getDeclaredFields()) {
+                if (!Set.class.isAssignableFrom(f.getType())) continue;
+
+                f.setAccessible(true);
+                Object val = f.get(this.targetSelector);
+
+                if (val instanceof Set<?> set && !set.isEmpty()) {
+                    stopHurtByInWrappedSet(set);
+                    return;
+                }
+            }
+        } catch (Throwable ignored) { }
+    }
+
+    private void stopHurtByInWrappedSet(Set<?> wrappedGoalSet) {
+        for (Object wrapped : wrappedGoalSet) {
+            try {
+                Goal goal = extractGoalFromWrapped(wrapped);
+                if (goal instanceof CatoGatedHurtByTargetGoal) {
+                    // stop the wrapper if possible (better), else stop the goal itself
+                    if (!tryStopWrapped(wrapped)) {
+                        goal.stop();
+                    }
+                }
+            } catch (Throwable ignored) {
+                // skip bad entries; this is best-effort
+            }
+        }
+    }
+
+    @Nullable
+    private Goal extractGoalFromWrapped(Object wrapped) {
+        // Common wrapper API: getGoal()
+        try {
+            var mg = wrapped.getClass().getMethod("getGoal");
+            Object g = mg.invoke(wrapped);
+            if (g instanceof Goal goal) return goal;
+        } catch (Throwable ignored) { }
+
+        // Common wrapper field: goal
+        try {
+            var fg = wrapped.getClass().getDeclaredField("goal");
+            fg.setAccessible(true);
+            Object g = fg.get(wrapped);
+            if (g instanceof Goal goal) return goal;
+        } catch (Throwable ignored) { }
+
+        return null;
+    }
+
+    private boolean tryStopWrapped(Object wrapped) {
+        // Some wrappers expose stop()
+        try {
+            var ms = wrapped.getClass().getMethod("stop");
+            ms.invoke(wrapped);
+            return true;
+        } catch (Throwable ignored) { }
+
+        // Or a "stop" field is unlikely; we keep it simple.
+        return false;
     }
 
     // ================================================================

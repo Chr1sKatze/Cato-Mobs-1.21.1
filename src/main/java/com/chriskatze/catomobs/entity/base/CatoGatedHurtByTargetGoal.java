@@ -1,5 +1,6 @@
 package com.chriskatze.catomobs.entity.base;
 
+import com.chriskatze.catomobs.entity.CatoMobSpeciesInfo;
 import com.chriskatze.catomobs.entity.CatoMobTemperament;
 import net.minecraft.world.entity.ai.goal.target.HurtByTargetGoal;
 
@@ -13,10 +14,15 @@ public class CatoGatedHurtByTargetGoal extends HurtByTargetGoal {
     }
 
     private boolean retaliationAllowedNow() {
-        // Hostile mobs can always retaliate (vanilla style)
-        if (mob.getSpeciesInfo().temperament() == CatoMobTemperament.HOSTILE) return true;
+        CatoMobSpeciesInfo info = mob.getSpeciesInfo();
 
-        // Neutral retaliators: only while anger timer is active
+        // If species disables retaliation entirely, never start HurtBy retaliation.
+        if (!info.retaliateWhenAngered()) return false;
+
+        // Hostile mobs: allowed to retaliate (vanilla style).
+        if (info.temperament() == CatoMobTemperament.HOSTILE) return true;
+
+        // Neutral mobs: only retaliate while "angerTime" is active.
         return mob.angerTime > 0;
     }
 

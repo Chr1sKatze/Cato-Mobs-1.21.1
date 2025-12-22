@@ -37,6 +37,18 @@ public record CatoMobSpeciesInfo(
         int retaliationDurationTicks,
 
         // ================================================================
+        // 2.6) FLEE / PANIC (overrides retaliation while active)
+        // ================================================================
+        boolean fleeEnabled,
+        boolean fleeOnLowHealth,
+        float fleeLowHealthThreshold,   // absolute HP (e.g. 3.0f)
+        boolean fleeOnHurt,             // flee immediately when hit
+        int fleeDurationTicks,          // how long fleeing lasts once triggered
+        int fleeCooldownTicks,          // cooldown after fleeing ends
+        double fleeSpeedModifier,       // nav speed while fleeing
+        double fleeDesiredDistance,      // try to keep this distance from threat
+
+        // ================================================================
         // 3) COMBAT / ATTACK TIMING (timed-attack system)
         // ================================================================
         double attackTriggerRange,

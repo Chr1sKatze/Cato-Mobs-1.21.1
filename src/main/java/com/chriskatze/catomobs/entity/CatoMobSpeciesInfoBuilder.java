@@ -41,6 +41,18 @@ public final class CatoMobSpeciesInfoBuilder {
     private int retaliationDurationTicks = 180; // 9s default
 
     // -----------------------------
+    // 2.6) Flee / panic
+    // -----------------------------
+    private boolean fleeEnabled = false;
+    private boolean fleeOnLowHealth = false;
+    private float fleeLowHealthThreshold = 3.0F; // HP threshold
+    private boolean fleeOnHurt = false;
+    private int fleeDurationTicks = 20 * 4;      // 4s
+    private int fleeCooldownTicks = 20 * 10;     // 10s
+    private double fleeSpeedModifier = 1.25D;
+    private double fleeDesiredDistance = 12.0D;
+
+    // -----------------------------
     // 3) Combat timing
     // -----------------------------
     private double attackTriggerRange = 2.5D;
@@ -163,18 +175,41 @@ public final class CatoMobSpeciesInfoBuilder {
         return this;
     }
 
-    // ---- NEW: render/size knobs ----
+    // ---- Render knob ----
 
     public CatoMobSpeciesInfoBuilder shadow(float radius) {
         this.shadowRadius = Math.max(0.0F, radius);
         return this;
     }
 
-    // ---- NEW: retaliation knobs ----
+    // ---- Retaliation knobs ----
 
     public CatoMobSpeciesInfoBuilder retaliation(boolean enabled, int durationTicks) {
         this.retaliateWhenAngered = enabled;
         this.retaliationDurationTicks = Math.max(0, durationTicks);
+        return this;
+    }
+
+    // ---- NEW: Flee / panic knobs ----
+
+    public CatoMobSpeciesInfoBuilder flee(
+            boolean enabled,
+            boolean onLowHealth,
+            float lowHealthThreshold,
+            boolean onHurt,
+            int durationTicks,
+            int cooldownTicks,
+            double speedModifier,
+            double desiredDistance
+    ) {
+        this.fleeEnabled = enabled;
+        this.fleeOnLowHealth = onLowHealth;
+        this.fleeLowHealthThreshold = Math.max(0.0F, lowHealthThreshold);
+        this.fleeOnHurt = onHurt;
+        this.fleeDurationTicks = Math.max(0, durationTicks);
+        this.fleeCooldownTicks = Math.max(0, cooldownTicks);
+        this.fleeSpeedModifier = Math.max(0.05D, speedModifier);
+        this.fleeDesiredDistance = Math.max(1.0D, desiredDistance);
         return this;
     }
 
@@ -403,14 +438,34 @@ public final class CatoMobSpeciesInfoBuilder {
         // ---- visual safety ----
         float shadow = Math.max(0.0F, this.shadowRadius);
 
+        // ---- retaliation safety ----
         boolean retaliate = this.retaliateWhenAngered;
         int retaliationTicks = Math.max(0, this.retaliationDurationTicks);
+
+        // ---- flee safety ----
+        boolean fleeEnabledSafe = this.fleeEnabled;
+        boolean fleeLowSafe = fleeEnabledSafe && this.fleeOnLowHealth;
+        boolean fleeOnHurtSafe = fleeEnabledSafe && this.fleeOnHurt;
+
+        float fleeHp = Math.max(0.0F, this.fleeLowHealthThreshold);
+        int fleeDuration = Math.max(0, this.fleeDurationTicks);
+        int fleeCooldown = Math.max(0, this.fleeCooldownTicks);
+        double fleeSpeed = Math.max(0.05D, this.fleeSpeedModifier);
+        double fleeDist = Math.max(1.0D, this.fleeDesiredDistance);
+
+        // If fleeing is disabled, force consistent “off” values
+        if (!fleeEnabledSafe) {
+            fleeLowSafe = false;
+            fleeOnHurtSafe = false;
+            fleeDuration = 0;
+            fleeCooldown = 0;
+        }
 
         return new CatoMobSpeciesInfo(
                 // 1) Identity
                 movementType, temperament, sizeCategory,
 
-                // 1.5) Render / size
+                // 1.5) Render
                 shadow,
 
                 // 2) Core
@@ -423,6 +478,16 @@ public final class CatoMobSpeciesInfoBuilder {
                 // 2.5) Retaliation
                 retaliate,
                 retaliationTicks,
+
+                // 2.6) Flee / panic  ✅ NEW WIRED IN
+                fleeEnabledSafe,
+                fleeLowSafe,
+                fleeHp,
+                fleeOnHurtSafe,
+                fleeDuration,
+                fleeCooldown,
+                fleeSpeed,
+                fleeDist,
 
                 // 3) Combat
                 Math.max(0.0D, attackTriggerRange),

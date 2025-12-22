@@ -27,6 +27,18 @@ public class CatoMeleeAttackGoal extends Goal {
         this.setFlags(EnumSet.of(Goal.Flag.MOVE, Goal.Flag.LOOK));
     }
 
+    private boolean canAttackNow() {
+        CatoMobSpeciesInfo info = this.mob.getSpeciesInfo();
+        CatoMobTemperament t = info.temperament();
+
+        // Hostile: allowed to attack whenever it has a valid target
+        if (t == CatoMobTemperament.HOSTILE) return true;
+
+        // Neutral: only attack if species allows retaliation AND anger is active
+        if (!info.retaliateWhenAngered()) return false;
+        return this.mob.angerTime > 0;
+    }
+
     @Override
     public boolean canUse() {
         LivingEntity target = this.mob.getTarget();
@@ -34,8 +46,7 @@ public class CatoMeleeAttackGoal extends Goal {
 
         if (target instanceof Player p && (p.isCreative() || p.isSpectator())) return false;
 
-        CatoMobTemperament t = this.mob.getSpeciesInfo().temperament();
-        if (t != CatoMobTemperament.HOSTILE && this.mob.angerTime <= 0) return false;
+        if (!canAttackNow()) return false;
 
         return this.mob.isWithinRestriction(target.blockPosition());
     }
@@ -45,8 +56,7 @@ public class CatoMeleeAttackGoal extends Goal {
         LivingEntity target = this.mob.getTarget();
         if (target == null || !target.isAlive()) return false;
 
-        CatoMobTemperament t = this.mob.getSpeciesInfo().temperament();
-        if (t != CatoMobTemperament.HOSTILE && this.mob.angerTime <= 0) return false;
+        if (!canAttackNow()) return false;
 
         if (!this.mob.isWithinRestriction(target.blockPosition())) return false;
 

@@ -34,16 +34,28 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
             CatoMobSpeciesInfoBuilder.create()
                     .identity(
                             CatoMobMovementType.LAND,
-                            CatoMobTemperament.NEUTRAL_RETALIATE_SHORT,
+                            CatoMobTemperament.NEUTRAL,
                             CatoMobSizeCategory.SMALL
                     )
                     // render
                     .shadow(2.50f)
+
+                    // flee
+                    .flee(
+                            true,     // enabled
+                            true,     // fleeOnLowHealth
+                            1.0F,     // low HP threshold (HP, not hearts)
+                            true,     // fleeOnHurt
+                            20 * 4,   // duration ticks
+                            20 * 10,  // cooldown ticks
+                            1.25D,    // flee speed modifier
+                            12.0D     // desired distance
+                    )
                     // retaliation
-                    .retaliation(false,0)
+                    .retaliation(true,20 * 9)
                     // Core Tuning
                     .core(8.0D, 1.0D, 0.30D, 16.0D, 0.08D)
-                    .combat(1.0D, 4.0D, 70, 60, 30)
+                    .combat(2.0D, 4.0D, 70, 60, 30)
                     .chaseSpeed(1.60D)
                     .moveDuringAttackAnimation(false)
                     .attackMoveWindow(0,0)

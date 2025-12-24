@@ -42,14 +42,14 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
 
                     // flee
                     .flee(
-                            true,     // enabled
-                            true,     // fleeOnLowHealth
-                            1.0F,     // low HP threshold (HP, not hearts)
-                            true,     // fleeOnHurt
-                            20 * 4,   // duration ticks
-                            20 * 10,  // cooldown ticks
-                            1.25D,    // flee speed modifier
-                            12.0D     // desired distance
+                            true,
+                            true,
+                            4.0F,
+                            false,
+                            20 * 20,
+                            20 * 10,
+                            1.35D,
+                            12.0D
                     )
                     // retaliation
                     .retaliation(true,20 * 9)

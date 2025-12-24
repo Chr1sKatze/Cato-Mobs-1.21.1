@@ -28,6 +28,9 @@ public class CatoMeleeAttackGoal extends Goal {
     }
 
     private boolean canAttackNow() {
+        // FLEE OVERRIDES COMBAT
+        if (this.mob.isFleeing()) return false;
+
         CatoMobSpeciesInfo info = this.mob.getSpeciesInfo();
         CatoMobTemperament t = info.temperament();
 

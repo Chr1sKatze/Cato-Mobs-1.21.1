@@ -14,11 +14,9 @@ public class CatoGatedNearestPlayerTargetGoal extends NearestAttackableTargetGoa
     }
 
     private boolean allowedNow() {
-        // Only HOSTILE mobs may auto-acquire players.
-        return mob.getSpeciesInfo().temperament() == CatoMobTemperament.HOSTILE;
-
-        // Later, when flee exists, you’ll add:
-        // && !mob.isFleeing();
+        // Only HOSTILE mobs may auto-acquire players, and never while fleeing.
+        return mob.getSpeciesInfo().temperament() == CatoMobTemperament.HOSTILE
+                && !mob.isFleeing();
     }
 
     @Override

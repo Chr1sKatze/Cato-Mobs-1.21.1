@@ -413,12 +413,17 @@ public abstract class CatoBaseMob extends Animal {
     }
 
     private void startFlee(LivingEntity threat) {
+        startFlee(threat, false);
+    }
+
+    private void startFlee(LivingEntity threat, boolean bypassCooldown) {
         if (this.level().isClientSide) return;
 
         CatoMobSpeciesInfo info = getSpeciesInfo();
         if (!info.fleeEnabled()) return;
         if (info.fleeDurationTicks() <= 0) return;
-        if (isFleeOnCooldown()) return;
+
+        if (!bypassCooldown && isFleeOnCooldown()) return;
 
         this.fleeThreat = threat;
         this.fleeTicksRemaining = info.fleeDurationTicks();
@@ -431,6 +436,31 @@ public abstract class CatoBaseMob extends Animal {
         clearAttackState();
 
         this.getNavigation().stop();
+    }
+
+    private void tickFleeLowHealthServer() {
+        if (this.level().isClientSide) return;
+
+        CatoMobSpeciesInfo info = getSpeciesInfo();
+        if (!info.fleeEnabled() || !info.fleeOnLowHealth()) return;
+
+        // already fleeing? don't restart
+        if (isFleeing()) return;
+
+        // cooldown should apply for low-hp auto flee (prevents spam)
+        if (isFleeOnCooldown()) return;
+
+        float hp = this.getHealth();
+        if (hp > info.fleeLowHealthThreshold()) return;
+
+        // pick a reasonable threat:
+        LivingEntity threat = this.getLastHurtByMob();
+        if (threat == null) threat = this.getTarget();
+
+        // if nobody is known, you can still flee from nearest player, or just don't.
+        if (threat != null) {
+            startFlee(threat, false); // respect cooldown for low-hp flee
+        }
     }
 
     // ================================================================
@@ -903,9 +933,10 @@ public abstract class CatoBaseMob extends Animal {
 
             // ------------------------------------------------------------
             // 1) FLEE OVERRIDES EVERYTHING
+            //    IMPORTANT FIX: bypass cooldown when fleeing is triggered by being hurt
             // ------------------------------------------------------------
             if (info.fleeEnabled() && info.fleeOnHurt()) {
-                startFlee(attacker);
+                startFlee(attacker, true); // bypass cooldown on hurt
                 return result; // IMPORTANT: do NOT retaliate
             }
 
@@ -1230,7 +1261,7 @@ public abstract class CatoBaseMob extends Animal {
     }
 
     // ================================================================
-// 20) MAIN SERVER TICK (sleep + anger + timed attack damage)
+// 20) MAIN SERVER TICK (sleep + flee + anger + timed attack damage)
 // ================================================================
     @Override
     public void aiStep() {
@@ -1270,6 +1301,39 @@ public abstract class CatoBaseMob extends Animal {
             this.setAggressive(false);
             tickAiDebugServer();
             return;
+        }
+
+        // ------------------------------------------------------------
+        // Low HP flee trigger (server-only)
+        // ------------------------------------------------------------
+        tickFleeLowHealthServer();
+
+        // ------------------------------------------------------------
+        // FLEE TIMER TICK + COOLDOWN (server-only)
+        // Fixes: infinite fleeing + ensures RUN animation intent while fleeing
+        // ------------------------------------------------------------
+        if (fleeTicksRemaining > 0) {
+            fleeTicksRemaining--;
+
+            // RUN only while actually moving (avoids "run in place")
+            this.setMoveMode(this.getNavigation().isInProgress() ? MOVE_RUN : MOVE_IDLE);
+
+            if (fleeTicksRemaining <= 0) {
+                CatoMobSpeciesInfo info = getSpeciesInfo();
+                fleeCooldownUntil = this.level().getGameTime() + Math.max(0, info.fleeCooldownTicks());
+
+                fleeThreat = null;
+
+                // Hard reset after fleeing ends (prevents immediate snap-back to combat)
+                this.angerTime = 0;
+                this.setTarget(null);
+                this.setAggressive(false);
+                this.setLastHurtByMob(null);
+                clearAttackState();
+
+                this.getNavigation().stop();
+                this.setMoveMode(MOVE_IDLE);
+            }
         }
 
         // ------------------------------------------------------------

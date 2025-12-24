@@ -14,6 +14,9 @@ public class CatoGatedHurtByTargetGoal extends HurtByTargetGoal {
     }
 
     private boolean retaliationAllowedNow() {
+        // FLEE OVERRIDES RETALIATION
+        if (mob.isFleeing()) return false;
+
         CatoMobSpeciesInfo info = mob.getSpeciesInfo();
 
         // If species disables retaliation entirely, never start HurtBy retaliation.

@@ -459,8 +459,68 @@ public abstract class CatoBaseMob extends Animal {
 
         // if nobody is known, you can still flee from nearest player, or just don't.
         if (threat != null) {
-            startFlee(threat, false); // respect cooldown for low-hp flee
+            startFlee(threat, false);   // start fleeing
+            triggerGroupFlee(threat);
         }
+    }
+
+    private void triggerGroupFlee(LivingEntity threat) {
+        if (this.level().isClientSide) return;
+
+        CatoMobSpeciesInfo info = getSpeciesInfo();
+        if (!info.groupFleeEnabled()) return;
+
+        double r = Math.max(0.0D, info.groupFleeRadius());
+        int max = Math.max(0, info.groupFleeMaxAllies());
+        if (r <= 0.0D || max <= 0) return;
+
+        var box = this.getBoundingBox().inflate(r, 4.0D, r);
+
+        final boolean anyCato = info.groupFleeAnyCatoMobAllies();
+        final var allowedTypes = info.groupFleeAllyTypes(); // may be empty
+
+        // Collect candidates
+        List<? extends LivingEntity> candidates;
+        if (anyCato) {
+            candidates = this.level().getEntitiesOfClass(
+                    CatoBaseMob.class,
+                    box,
+                    e -> e != this && e.isAlive()
+            );
+        } else if (allowedTypes != null && !allowedTypes.isEmpty()) {
+            candidates = this.level().getEntitiesOfClass(
+                    CatoBaseMob.class,
+                    box,
+                    e -> e != this && e.isAlive() && allowedTypes.contains(e.getType())
+            );
+        } else {
+            // No ally definition -> don't spread at all
+            return;
+        }
+
+        int triggered = 0;
+
+        for (var entity : candidates) {
+            if (triggered >= max) break;
+            if (!(entity instanceof CatoBaseMob ally)) continue;
+
+            // LOS requirement: ally must be able to see the hurt mob (THIS)
+            if (!ally.hasLineOfSight(this)) continue;
+
+            if (ally.isFleeing()) continue;
+
+            boolean bypassCooldown = info.groupFleeBypassCooldown();
+
+            // optional: ensure ally can actually flee at all
+            if (!ally.getSpeciesInfo().fleeEnabled()) continue;
+
+            ally.startFleeFromAlly(threat, bypassCooldown);
+            triggered++;
+        }
+    }
+
+    void startFleeFromAlly(LivingEntity threat, boolean bypassCooldown) {
+        startFlee(threat, bypassCooldown);
     }
 
     // ================================================================
@@ -864,6 +924,15 @@ public abstract class CatoBaseMob extends Animal {
         CatoMobSpeciesInfo info = getSpeciesInfo();
         CatoGoalPriorityProfile prio = getGoalPriorities();
 
+        // Rain shelter: higher priority than wander.
+        // While raining it keeps control so wander won't walk out into open rain,
+        // but while roofed it will still "wander-like" within roofed areas (per the goal logic).
+        if (info.rainShelterEnabled()) {
+            int rainPriority = Math.max(0, prio.wander - 1);
+            this.goalSelector.addGoal(rainPriority, new CatoRainShelterGoal(this));
+        }
+
+        // Wander (normal behavior when not raining / not shelter-managed)
         this.goalSelector.addGoal(
                 prio.wander,
                 new CatoWanderGoal(
@@ -877,6 +946,7 @@ public abstract class CatoBaseMob extends Animal {
                 )
         );
     }
+
 
     protected void setupFlyingGoals() { this.goalSelector.addGoal(5, new RandomStrollGoal(this, 1.0D)); }
     protected void setupHoveringGoals() { this.goalSelector.addGoal(5, new RandomStrollGoal(this, 0.7D)); }
@@ -936,8 +1006,9 @@ public abstract class CatoBaseMob extends Animal {
             //    IMPORTANT FIX: bypass cooldown when fleeing is triggered by being hurt
             // ------------------------------------------------------------
             if (info.fleeEnabled() && info.fleeOnHurt()) {
-                startFlee(attacker, true); // bypass cooldown on hurt
-                return result; // IMPORTANT: do NOT retaliate
+                startFlee(attacker, true);      // bypass cooldown on hurt
+                triggerGroupFlee(attacker);     // <-- ADD THIS LINE (step 3.3)
+                return result;                  // IMPORTANT: do NOT retaliate
             }
 
             // ------------------------------------------------------------

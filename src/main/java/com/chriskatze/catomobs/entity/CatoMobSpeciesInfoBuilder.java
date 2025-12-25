@@ -38,19 +38,33 @@ public final class CatoMobSpeciesInfoBuilder {
     // 2.5) Retaliation / anger
     // -----------------------------
     private boolean retaliateWhenAngered = true;
-    private int retaliationDurationTicks = 180; // 9s default
+    private int retaliationDurationTicks = 180;
 
     // -----------------------------
     // 2.6) Flee / panic
     // -----------------------------
     private boolean fleeEnabled = false;
     private boolean fleeOnLowHealth = false;
-    private float fleeLowHealthThreshold = 3.0F; // HP threshold
+    private float fleeLowHealthThreshold = 3.0F;
     private boolean fleeOnHurt = false;
-    private int fleeDurationTicks = 20 * 4;      // 4s
-    private int fleeCooldownTicks = 20 * 10;     // 10s
+    private int fleeDurationTicks = 20 * 4;
+    private int fleeCooldownTicks = 20 * 10;
     private double fleeSpeedModifier = 1.25D;
     private double fleeDesiredDistance = 12.0D;
+
+    // -----------------------------
+    // 2.7) Group flee
+    // -----------------------------
+    private boolean groupFleeEnabled = false;
+    private double groupFleeRadius = 16.0D;
+    private int groupFleeMaxAllies = 4;
+    private boolean groupFleeBypassCooldown = false;
+
+    // -----------------------------
+    // 2.8) Group flee ally definition
+    // -----------------------------
+    private boolean groupFleeAnyCatoMobAllies = false;
+    private Set<EntityType<?>> groupFleeAllyTypes = Collections.emptySet();
 
     // -----------------------------
     // 3) Combat timing
@@ -63,15 +77,9 @@ public final class CatoMobSpeciesInfoBuilder {
 
     private double chaseSpeedModifier = 1.1D;
 
-    /**
-     * Attack animation movement gating:
-     * - moveDuringAttackAnimation: primary toggle
-     * - attackMoveStartDelayTicks: delay before movement starts (when enabled)
-     * - attackMoveStopAfterTicks: optional stop limiter (see CatoMobSpeciesInfo docs)
-     */
     private boolean moveDuringAttackAnimation = false;
     private int attackMoveStartDelayTicks = 0;
-    private int attackMoveStopAfterTicks = 0; // <=0 means "no stop limit" for enabled-mode
+    private int attackMoveStopAfterTicks = 0;
 
     // -----------------------------
     // 4) Wander / movement
@@ -93,6 +101,37 @@ public final class CatoMobSpeciesInfoBuilder {
 
     private CatoMobSpeciesInfo.WaterMovementConfig waterMovement =
             CatoMobSpeciesInfo.WaterMovementConfig.disabled();
+
+    // -----------------------------
+    // 5.5) Rain shelter (disabled by default)
+    // -----------------------------
+    private boolean rainShelterEnabled = false;
+
+    private int rainShelterAttemptIntervalTicks = 20 * 5;
+    private float rainShelterAttemptChance = 0.0F;
+
+    private double rainShelterSearchRadiusBlocks = 16.0D;
+    private int rainShelterSearchAttempts = 24;
+    private int rainShelterRoofScanMaxBlocks = 12;
+
+    private double rainShelterRunToShelterSpeed = 1.2D;
+    private double rainShelterWalkSpeed = 1.0D;
+
+    private int rainShelterLingerAfterRainTicks = 0;
+
+    // ✅ Peek (human-tunable)
+    private int rainShelterPeekAvgIntervalTicks = 0; // 0 = disabled
+    private int rainShelterPeekMinTicks = 0;
+    private int rainShelterPeekMaxTicks = 0;
+    private double rainShelterPeekDistanceMinBlocks = 2.0D;
+    private double rainShelterPeekDistanceMaxBlocks = 6.0D;
+    private int rainShelterPeekSearchAttempts = 16;
+
+    // ✅ Roof-wander pacing under shelter (cleaner API — no radius fields)
+    private boolean rainShelterShuffleEnabled = false;
+    private int rainShelterShuffleIntervalMinTicks = 20 * 2;
+    private int rainShelterShuffleIntervalMaxTicks = 20 * 4;
+    private int rainShelterShuffleSearchAttempts = 16;
 
     // -----------------------------
     // 6) Sleep: enable + window + pacing
@@ -175,22 +214,16 @@ public final class CatoMobSpeciesInfoBuilder {
         return this;
     }
 
-    // ---- Render knob ----
-
     public CatoMobSpeciesInfoBuilder shadow(float radius) {
         this.shadowRadius = Math.max(0.0F, radius);
         return this;
     }
-
-    // ---- Retaliation knobs ----
 
     public CatoMobSpeciesInfoBuilder retaliation(boolean enabled, int durationTicks) {
         this.retaliateWhenAngered = enabled;
         this.retaliationDurationTicks = Math.max(0, durationTicks);
         return this;
     }
-
-    // ---- NEW: Flee / panic knobs ----
 
     public CatoMobSpeciesInfoBuilder flee(
             boolean enabled,
@@ -210,6 +243,20 @@ public final class CatoMobSpeciesInfoBuilder {
         this.fleeCooldownTicks = Math.max(0, cooldownTicks);
         this.fleeSpeedModifier = Math.max(0.05D, speedModifier);
         this.fleeDesiredDistance = Math.max(1.0D, desiredDistance);
+        return this;
+    }
+
+    public CatoMobSpeciesInfoBuilder groupFlee(boolean enabled, double radius, int maxAllies, boolean bypassCooldown) {
+        this.groupFleeEnabled = enabled;
+        this.groupFleeRadius = Math.max(0.0D, radius);
+        this.groupFleeMaxAllies = Math.max(0, maxAllies);
+        this.groupFleeBypassCooldown = bypassCooldown;
+        return this;
+    }
+
+    public CatoMobSpeciesInfoBuilder groupFleeAllies(boolean anyCatoBaseMob, Set<EntityType<?>> types) {
+        this.groupFleeAnyCatoMobAllies = anyCatoBaseMob;
+        this.groupFleeAllyTypes = (types == null ? Collections.emptySet() : new HashSet<>(types));
         return this;
     }
 
@@ -289,6 +336,75 @@ public final class CatoMobSpeciesInfoBuilder {
         );
         return this;
     }
+
+    // ================================================================
+    // ✅ Rain shelter fluent setters
+    // ================================================================
+
+    public CatoMobSpeciesInfoBuilder rainShelter(
+            boolean enabled,
+            int attemptIntervalTicks,
+            float attemptChance,
+            double searchRadiusBlocks,
+            int searchAttempts,
+            int roofScanMaxBlocks,
+            double runToShelterSpeed,
+            double walkSpeed,
+            int lingerAfterRainTicks
+    ) {
+        this.rainShelterEnabled = enabled;
+        this.rainShelterAttemptIntervalTicks = attemptIntervalTicks;
+        this.rainShelterAttemptChance = attemptChance;
+        this.rainShelterSearchRadiusBlocks = searchRadiusBlocks;
+        this.rainShelterSearchAttempts = searchAttempts;
+        this.rainShelterRoofScanMaxBlocks = roofScanMaxBlocks;
+        this.rainShelterRunToShelterSpeed = runToShelterSpeed;
+        this.rainShelterWalkSpeed = walkSpeed;
+        this.rainShelterLingerAfterRainTicks = lingerAfterRainTicks;
+        return this;
+    }
+
+    /**
+     * ✅ Peek is now tuned by "avg interval ticks" instead of per-tick probability.
+     * avgIntervalTicks = 0 disables peeking.
+     */
+    public CatoMobSpeciesInfoBuilder rainShelterPeek(
+            int avgIntervalTicks,
+            int peekMinTicks,
+            int peekMaxTicks,
+            double peekDistMinBlocks,
+            double peekDistMaxBlocks,
+            int peekSearchAttempts
+    ) {
+        this.rainShelterPeekAvgIntervalTicks = Math.max(0, avgIntervalTicks);
+        this.rainShelterPeekMinTicks = Math.max(0, peekMinTicks);
+        this.rainShelterPeekMaxTicks = Math.max(this.rainShelterPeekMinTicks, peekMaxTicks);
+        this.rainShelterPeekDistanceMinBlocks = Math.max(0.0D, peekDistMinBlocks);
+        this.rainShelterPeekDistanceMaxBlocks = Math.max(this.rainShelterPeekDistanceMinBlocks, peekDistMaxBlocks);
+        this.rainShelterPeekSearchAttempts = Math.max(0, peekSearchAttempts);
+        return this;
+    }
+
+    /**
+     * ✅ Cleaner API: no radius params.
+     * Roof-wander radius is taken from wanderMinRadius/wanderMaxRadius, with fallback to 0..max if needed.
+     */
+    public CatoMobSpeciesInfoBuilder rainShelterShuffle(
+            boolean enabled,
+            int intervalMinTicks,
+            int intervalMaxTicks,
+            int searchAttempts
+    ) {
+        this.rainShelterShuffleEnabled = enabled;
+        this.rainShelterShuffleIntervalMinTicks = Math.max(1, intervalMinTicks);
+        this.rainShelterShuffleIntervalMaxTicks = Math.max(this.rainShelterShuffleIntervalMinTicks, intervalMaxTicks);
+        this.rainShelterShuffleSearchAttempts = Math.max(0, searchAttempts);
+        return this;
+    }
+
+    // ================================================================
+    // Sleep setters (unchanged)
+    // ================================================================
 
     public CatoMobSpeciesInfoBuilder sleepWindow(boolean enabled, boolean atNight, boolean atDay) {
         this.sleepEnabled = enabled;
@@ -407,9 +523,8 @@ public final class CatoMobSpeciesInfoBuilder {
 
         double chaseMod = Math.max(0.05D, this.chaseSpeedModifier);
 
-        // ---- Attack animation movement window safety ----
         int moveDelay = Math.max(0, this.attackMoveStartDelayTicks);
-        int moveStopAfter = this.attackMoveStopAfterTicks; // keep sign; <=0 is meaningful
+        int moveStopAfter = this.attackMoveStopAfterTicks;
         if (moveStopAfter > 0 && moveStopAfter < moveDelay) {
             moveStopAfter = moveDelay;
         }
@@ -435,14 +550,11 @@ public final class CatoMobSpeciesInfoBuilder {
 
         Set<EntityType<?>> buddyTypes = preferBuddies ? Set.copyOf(this.sleepBuddyTypes) : Collections.emptySet();
 
-        // ---- visual safety ----
         float shadow = Math.max(0.0F, this.shadowRadius);
 
-        // ---- retaliation safety ----
         boolean retaliate = this.retaliateWhenAngered;
         int retaliationTicks = Math.max(0, this.retaliationDurationTicks);
 
-        // ---- flee safety ----
         boolean fleeEnabledSafe = this.fleeEnabled;
         boolean fleeLowSafe = fleeEnabledSafe && this.fleeOnLowHealth;
         boolean fleeOnHurtSafe = fleeEnabledSafe && this.fleeOnHurt;
@@ -453,12 +565,71 @@ public final class CatoMobSpeciesInfoBuilder {
         double fleeSpeed = Math.max(0.05D, this.fleeSpeedModifier);
         double fleeDist = Math.max(1.0D, this.fleeDesiredDistance);
 
-        // If fleeing is disabled, force consistent “off” values
         if (!fleeEnabledSafe) {
             fleeLowSafe = false;
             fleeOnHurtSafe = false;
             fleeDuration = 0;
             fleeCooldown = 0;
+        }
+
+        boolean groupEnabled =
+                this.groupFleeEnabled
+                        && this.groupFleeRadius > 0.0D
+                        && this.groupFleeMaxAllies > 0;
+
+        double groupRadius = Math.max(0.0D, this.groupFleeRadius);
+        int groupMax = Math.max(0, this.groupFleeMaxAllies);
+        boolean groupBypass = this.groupFleeBypassCooldown;
+
+        if (!fleeEnabledSafe) {
+            groupEnabled = false;
+        }
+
+        boolean anyCatoAllies = this.groupFleeAnyCatoMobAllies;
+        Set<EntityType<?>> allyTypesSafe = anyCatoAllies
+                ? Collections.emptySet()
+                : (this.groupFleeAllyTypes == null ? Collections.emptySet() : Set.copyOf(this.groupFleeAllyTypes));
+
+        if (!groupEnabled) {
+            anyCatoAllies = false;
+            allyTypesSafe = Collections.emptySet();
+        }
+
+        // ================================================================
+        // ✅ Rain shelter safety
+        // ================================================================
+        boolean rainEnabled = this.rainShelterEnabled;
+
+        int rainInterval = Math.max(1, this.rainShelterAttemptIntervalTicks);
+        float rainChance = clamp01(this.rainShelterAttemptChance);
+
+        double rainRadius = Math.max(4.0D, this.rainShelterSearchRadiusBlocks);
+        int rainAttempts = Math.max(1, this.rainShelterSearchAttempts);
+        int rainRoofMax = Math.max(1, this.rainShelterRoofScanMaxBlocks);
+
+        double rainRun = Math.max(0.05D, this.rainShelterRunToShelterSpeed);
+        double rainWalk = Math.max(0.05D, this.rainShelterWalkSpeed);
+
+        int rainLinger = Math.max(0, this.rainShelterLingerAfterRainTicks);
+
+        int peekAvg = Math.max(0, this.rainShelterPeekAvgIntervalTicks);
+        int peekMin = Math.max(0, this.rainShelterPeekMinTicks);
+        int peekMax = Math.max(peekMin, this.rainShelterPeekMaxTicks);
+        double peekMinDist = Math.max(0.0D, this.rainShelterPeekDistanceMinBlocks);
+        double peekMaxDist = Math.max(peekMinDist, this.rainShelterPeekDistanceMaxBlocks);
+        int peekAttempts = Math.max(0, this.rainShelterPeekSearchAttempts);
+
+        boolean shuffleEnabled = this.rainShelterShuffleEnabled;
+        int shufMin = Math.max(1, this.rainShelterShuffleIntervalMinTicks);
+        int shufMax = Math.max(shufMin, this.rainShelterShuffleIntervalMaxTicks);
+        int shufAttempts = Math.max(0, this.rainShelterShuffleSearchAttempts);
+
+        if (!rainEnabled) {
+            rainChance = 0.0f;
+            rainLinger = 0;
+
+            peekAvg = 0;
+            shuffleEnabled = false;
         }
 
         return new CatoMobSpeciesInfo(
@@ -479,7 +650,7 @@ public final class CatoMobSpeciesInfoBuilder {
                 retaliate,
                 retaliationTicks,
 
-                // 2.6) Flee / panic  ✅ NEW WIRED IN
+                // 2.6) Flee / panic
                 fleeEnabledSafe,
                 fleeLowSafe,
                 fleeHp,
@@ -488,6 +659,16 @@ public final class CatoMobSpeciesInfoBuilder {
                 fleeCooldown,
                 fleeSpeed,
                 fleeDist,
+
+                // 2.7) Group flee
+                groupEnabled,
+                groupRadius,
+                groupMax,
+                groupBypass,
+
+                // 2.8) Group flee ally definition
+                anyCatoAllies,
+                allyTypesSafe,
 
                 // 3) Combat
                 Math.max(0.0D, attackTriggerRange),
@@ -513,6 +694,31 @@ public final class CatoMobSpeciesInfoBuilder {
                 // 5) Water
                 waterMul,
                 waterMovementSafe,
+
+                // 5.5) Rain shelter
+                rainEnabled,
+                rainInterval,
+                rainChance,
+                rainRadius,
+                rainAttempts,
+                rainRoofMax,
+                rainRun,
+                rainWalk,
+                rainLinger,
+
+                // peek (avg interval)
+                peekAvg,
+                peekMin,
+                peekMax,
+                peekMinDist,
+                peekMaxDist,
+                peekAttempts,
+
+                // roof-wander pacing
+                shuffleEnabled,
+                shufMin,
+                shufMax,
+                shufAttempts,
 
                 // 6) Sleep window + attempts
                 sleepEnabled,

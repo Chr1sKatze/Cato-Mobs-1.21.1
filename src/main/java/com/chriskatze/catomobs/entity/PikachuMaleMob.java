@@ -32,27 +32,16 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
 
     public static final CatoMobSpeciesInfo SPECIES_INFO =
             CatoMobSpeciesInfoBuilder.create()
-                    .identity(
-                            CatoMobMovementType.LAND,
-                            CatoMobTemperament.NEUTRAL,
-                            CatoMobSizeCategory.SMALL
-                    )
+                    .identity(CatoMobMovementType.LAND, CatoMobTemperament.NEUTRAL, CatoMobSizeCategory.SMALL)
                     // render
-                    .shadow(2.50f)
+                    .shadow(1.0f)
+                    // fleeing
+                    .flee(true, false, 4.0F, true, 20 * 30, 20 * 10, 1.35D, 20.0D)
+                    .groupFlee(true,12.0D,10,false)
+                    .groupFleeAllies(false, Set.of(CMEntities.PIKACHU_MALE.get())) // true(, null) = all catomobs are allies
 
-                    // flee
-                    .flee(
-                            true,
-                            true,
-                            4.0F,
-                            false,
-                            20 * 20,
-                            20 * 10,
-                            1.35D,
-                            12.0D
-                    )
                     // retaliation
-                    .retaliation(true,20 * 9)
+                    .retaliation(false,20 * 9)
                     // Core Tuning
                     .core(8.0D, 1.0D, 0.30D, 16.0D, 0.08D)
                     .combat(2.0D, 4.0D, 70, 60, 30)
@@ -65,12 +54,7 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
 
                     // Water (speed + "feel")
                     .waterSwimSpeedMultiplier(1.8D)
-                    .waterMovement(
-                            true,
-                            0.7D,
-                            0.4D,
-                            0.2D
-                    )
+                    .waterMovement(true, 0.7D, 0.4D, 0.2D)
 
                     // Sleep
                     .sleepWindow(true, true, false)
@@ -81,33 +65,25 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
                     .sleepMemory(2, 2)
 
                     // Social sleeping
-                    .sleepBuddies(
-                            true,
-                            48.0D,
-                            4,
-                            2,
-                            25,
-                            true,
-                            Set.of(CMEntities.PIKACHU_MALE.get())
-                    )
+                    .sleepBuddies(true, 48.0D, 4, 2, 25, true,
+                            Set.of(CMEntities.PIKACHU_MALE.get()))
 
                     // Constraints & wake rules
                     .sleepConstraints(true, false)
                     .wakeRules(true, true, true, true, true)
 
                     // Search behavior
-                    .sleepSearch(
-                            400,
-                            32,
-                            1,
-                            12,
-                            20 * 10,
-                            20 * 3,
-                            2.0D,
-                            0.0D,
-                            true,
-                            true
-                    )
+                    .sleepSearch(400, 32, 1, 12, 20 * 10, 20 * 3, 2.0D, 0.0D, true, true)
+
+                    // Rain shelter (seek roof while raining)
+                    .rainShelter(true, 20 * 5, 0.35f, 24.0D, 32, 12, 1.35D, 1.00D, 20 * 2)
+
+                    // Peek behavior (optional “step out into rain, then return”)
+                    .rainShelterPeek(240, 20 * 3, 20 * 8, 2.0D, 8.0D, 16)
+
+                    // Shuffle under roof (your “don’t stand still”)
+                    .rainShelterShuffle(true, 20 * 5, 20 * 10, 16)
+
                     .build();
 
     @Override

@@ -49,17 +49,17 @@ public class CatoGoalPriorityProfile {
     /** FloatGoal is usually priority 0 so drowning avoidance always wins. */
     public int floatGoal = 0;
 
-    /** Sleep lock goal (blocks movement/AI while sleeping). */
-    public int sleepLock = 1;
-
-    /** Sleep search goal (navigate to roofed spot before sleeping). */
-    public int sleepSearch = 2;
-
     /**
      * Flee / panic goal (should override combat + wander).
      * Must be higher priority than meleeAttack.
      */
-    public int flee = 3;
+    public int flee = 1;
+
+    /** Sleep lock goal (blocks movement/AI while sleeping). */
+    public int sleepLock = 2;
+
+    /** Sleep search goal (navigate to roofed spot before sleeping). */
+    public int sleepSearch = 3;
 
     /** Melee attack/chase behavior. */
     public int meleeAttack = 4;

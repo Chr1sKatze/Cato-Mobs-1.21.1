@@ -21,12 +21,13 @@ public record CatoMobSpeciesInfo(
         // 1.5) RENDER (cosmetic)
         // ================================================================
         float shadowRadius,
+
         // ================================================================
         // 2) CORE ATTRIBUTES (fed into AttributeSupplier)
         // ================================================================
         double maxHealth,
         double attackDamage,
-        double movementSpeed,   // vanilla attribute (NOT wander speed)
+        double movementSpeed,
         double followRange,
         double gravity,
 
@@ -41,12 +42,26 @@ public record CatoMobSpeciesInfo(
         // ================================================================
         boolean fleeEnabled,
         boolean fleeOnLowHealth,
-        float fleeLowHealthThreshold,   // absolute HP (e.g. 3.0f)
-        boolean fleeOnHurt,             // flee immediately when hit
-        int fleeDurationTicks,          // how long fleeing lasts once triggered
-        int fleeCooldownTicks,          // cooldown after fleeing ends
-        double fleeSpeedModifier,       // nav speed while fleeing
-        double fleeDesiredDistance,      // try to keep this distance from threat
+        float fleeLowHealthThreshold,
+        boolean fleeOnHurt,
+        int fleeDurationTicks,
+        int fleeCooldownTicks,
+        double fleeSpeedModifier,
+        double fleeDesiredDistance,
+
+        // ================================================================
+        // 2.7) GROUP FLEE (panic spread)
+        // ================================================================
+        boolean groupFleeEnabled,
+        double groupFleeRadius,
+        int groupFleeMaxAllies,
+        boolean groupFleeBypassCooldown,
+
+        // ================================================================
+        // 2.8) GROUP FLEE — ALLY DEFINITION
+        // ================================================================
+        boolean groupFleeAnyCatoMobAllies,
+        java.util.Set<net.minecraft.world.entity.EntityType<?>> groupFleeAllyTypes,
 
         // ================================================================
         // 3) COMBAT / ATTACK TIMING (timed-attack system)
@@ -57,41 +72,9 @@ public record CatoMobSpeciesInfo(
         int attackAnimTotalTicks,
         int attackHitDelayTicks,
 
-        /**
-         * Navigation speed modifier used while chasing a target (melee goal).
-         * This is the "speed" value passed into Navigation#moveTo(..., speed).
-         *
-         * Actual in-game movement will still be influenced by the vanilla movementSpeed attribute,
-         * but this controls how aggressively the mob chases.
-         */
         double chaseSpeedModifier,
-
-        /**
-         * If false: normally root during attack animation (no chasing movement while isAttacking() is true).
-         * If true: allow navigation to keep updating while the attack animation plays,
-         *          subject to the start-delay / stop-after tick windows below.
-         */
         boolean moveDuringAttackAnimation,
-
-        /**
-         * If moveDuringAttackAnimation == true:
-         *   - root until attackAnimAgeTicks >= this value (delay before movement starts)
-         * If moveDuringAttackAnimation == false:
-         *   - (optional) still used only if you choose to implement special behavior, otherwise ignored
-         */
         int attackMoveStartDelayTicks,
-
-        /**
-         * Movement window limiter during attack animation.
-         *
-         * If > 0:
-         *   - when moveDuringAttackAnimation == true:
-         *       movement is allowed only while attackAnimAgeTicks is in [attackMoveStartDelayTicks .. attackMoveStopAfterTicks-1]
-         *   - when moveDuringAttackAnimation == false:
-         *       movement is allowed only while attackAnimAgeTicks < attackMoveStopAfterTicks (early-move window), then rooted.
-         *
-         * If <= 0: "no stop limit" (move until animation ends, if enabled and after delay).
-         */
         int attackMoveStopAfterTicks,
 
         // ================================================================
@@ -103,7 +86,6 @@ public record CatoMobSpeciesInfo(
         double wanderMinRadius,
         double wanderMaxRadius,
 
-        // Home radius behavior (used by wander + sleep search bounds)
         boolean stayWithinHomeRadius,
         double homeRadius,
 
@@ -113,12 +95,42 @@ public record CatoMobSpeciesInfo(
         // 5) WATER MOVEMENT TUNING (travel() modifiers)
         // ================================================================
         double waterSwimSpeedMultiplier,
-
-        /**
-         * Water movement “feel” configuration for travel().
-         * Used by WaterMovementComponent.
-         */
         WaterMovementConfig waterMovement,
+
+        // ================================================================
+        // 5.5) RAIN SHELTER (seek roof while raining + peek + roof-wander)
+        // ================================================================
+        boolean rainShelterEnabled,
+
+        // decision pacing
+        int rainShelterAttemptIntervalTicks,
+        float rainShelterAttemptChance,
+
+        // search behavior
+        double rainShelterSearchRadiusBlocks,
+        int rainShelterSearchAttempts,
+        int rainShelterRoofScanMaxBlocks,
+
+        // movement speeds while sheltering
+        double rainShelterRunToShelterSpeed,
+        double rainShelterWalkSpeed,
+
+        // after rain stops
+        int rainShelterLingerAfterRainTicks,
+
+        // "peek" behavior (✅ human-tunable)
+        int rainShelterPeekAvgIntervalTicks,
+        int rainShelterPeekMinTicks,
+        int rainShelterPeekMaxTicks,
+        double rainShelterPeekDistanceMinBlocks,
+        double rainShelterPeekDistanceMaxBlocks,
+        int rainShelterPeekSearchAttempts,
+
+        // ✅ roof-wander pacing under shelter (cleaner API: no radius params here)
+        boolean rainShelterShuffleEnabled,
+        int rainShelterShuffleIntervalMinTicks,
+        int rainShelterShuffleIntervalMaxTicks,
+        int rainShelterShuffleSearchAttempts,
 
         // ================================================================
         // 6) SLEEP — ENABLE + TIME WINDOW + ATTEMPT PACING

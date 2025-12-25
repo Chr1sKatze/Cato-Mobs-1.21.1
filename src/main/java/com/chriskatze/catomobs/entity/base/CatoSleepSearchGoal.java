@@ -49,6 +49,9 @@ public class CatoSleepSearchGoal extends Goal {
         if (mob.isSleepSearching()) return false;
         if (mob.isSleepSearchOnCooldown()) return false;
 
+        // ✅ FLEE GATE: never start searching while fleeing
+        if (mob.isFleeing()) return false;
+
         if (mob.getTarget() != null || mob.isAggressive()) return false;
 
         boolean isDay = mob.level().isDay();
@@ -62,8 +65,6 @@ public class CatoSleepSearchGoal extends Goal {
 
         if (!mob.wantsToSleepNow()) return false;
 
-        // We start the episode even if we have no immediate candidate.
-        // tick() will keep trying, but now it can "give up" quickly to avoid freezing.
         this.targetPos = SleepSpotFinder.findRoofedSleepSpot(mob, info);
 
         return this.targetPos != null;
@@ -72,6 +73,9 @@ public class CatoSleepSearchGoal extends Goal {
     @Override
     public boolean canContinueToUse() {
         if (mob.isSleeping()) return false;
+
+        // ✅ FLEE GATE: abort search immediately if fleeing starts mid-search
+        if (mob.isFleeing()) return false;
 
         CatoMobSpeciesInfo info = mob.getSpeciesInfo();
 
@@ -105,10 +109,9 @@ public class CatoSleepSearchGoal extends Goal {
             double speed = Math.max(0.1D, mob.getSpeciesInfo().wanderWalkSpeed());
             BlockPos pos = this.targetPos;
             if (!moveToTarget(pos, speed)) {
-                // If we fail instantly, don't freeze - abandon target and let tick() handle repick/give-up.
                 mob.strikeSleepSpot(pos);
                 this.targetPos = null;
-                this.noTargetTicks = NO_TARGET_GIVE_UP_TICKS; // makes us give up quickly unless a target appears
+                this.noTargetTicks = NO_TARGET_GIVE_UP_TICKS;
             }
         }
     }
@@ -180,9 +183,6 @@ public class CatoSleepSearchGoal extends Goal {
             repickCooldownTicks = 5;
 
             if (targetPos == null) {
-                // ✅ CRITICAL FIX:
-                // Do NOT keep holding MOVE flag while doing nothing.
-                // Give up quickly and let wander resume.
                 if (++noTargetTicks >= NO_TARGET_GIVE_UP_TICKS) {
                     mob.startSleepSearchCooldown(NO_TARGET_COOLDOWN_TICKS);
                     stop();
@@ -190,19 +190,15 @@ public class CatoSleepSearchGoal extends Goal {
                 return;
             }
 
-            // Found a target => reset "no target" counter
             noTargetTicks = 0;
             failedMoveToTicks = 0;
 
             double speed = Math.max(0.1D, info.wanderWalkSpeed());
             BlockPos pos = targetPos;
             if (!moveToTarget(pos, speed)) {
-                // Can't even begin pathing -> strike and abandon, but don't freeze.
                 mob.strikeSleepSpot(pos);
                 targetPos = null;
                 repickCooldownTicks = 0;
-
-                // push us towards giving up quickly if we keep failing
                 noTargetTicks = Math.min(NO_TARGET_GIVE_UP_TICKS, noTargetTicks + 5);
             }
             return;
@@ -218,7 +214,7 @@ public class CatoSleepSearchGoal extends Goal {
             Vec3 now = mob.position();
 
             boolean navSaysMoving = mob.getNavigation().isInProgress();
-            boolean actuallyMoved = (lastPos == null) || now.distanceToSqr(lastPos) > 0.0004D; // ~0.02 blocks
+            boolean actuallyMoved = (lastPos == null) || now.distanceToSqr(lastPos) > 0.0004D;
 
             if (navSaysMoving && !actuallyMoved) notMovingTicks++;
             else notMovingTicks = 0;
@@ -245,7 +241,6 @@ public class CatoSleepSearchGoal extends Goal {
                 notMovingTicks = 0;
                 lastPos = mob.position();
 
-                // If we keep getting stuck, don't hold MOVE forever.
                 noTargetTicks = Math.min(NO_TARGET_GIVE_UP_TICKS, noTargetTicks + 8);
                 return;
             }
@@ -266,7 +261,6 @@ public class CatoSleepSearchGoal extends Goal {
                     noProgressTicks = 0;
                     notMovingTicks = 0;
 
-                    // Don't freeze on repeated failures.
                     noTargetTicks = Math.min(NO_TARGET_GIVE_UP_TICKS, noTargetTicks + 5);
                 }
                 return;

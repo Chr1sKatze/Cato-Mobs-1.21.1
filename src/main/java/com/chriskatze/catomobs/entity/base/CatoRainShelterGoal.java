@@ -1,6 +1,7 @@
 package com.chriskatze.catomobs.entity.base;
 
 import com.chriskatze.catomobs.entity.CatoMobSpeciesInfo;
+import com.chriskatze.catomobs.registry.CMBlockTags;
 import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.ai.goal.Goal;
@@ -12,20 +13,60 @@ import java.util.EnumSet;
 /**
  * CatoRainShelterGoal
  *
- * Behavior:
- * - When it rains (and biome can have precipitation): occasionally decide to seek shelter (roofed position).
- * - Once roofed: prefer staying roofed until rain stops (prevents wandering out).
- * - Natural touch: sometimes "peek" into rain briefly, then return.
- * - While roofed: move around like normal wander, BUT only to roofed targets.
+ * Anti-jitter fixes:
+ * - Post-peek cooldown (prevents rapid peek spam)
+ * - "crossing grace" when moving from one roofed area to another roofed area,
+ *   so mobs don't ping-pong when a short rain gap exists between two roofs.
  *
- * Fixes:
- * - Don't shelter in dry biomes (savanna/desert) during global rain.
- * - If roof disappears (tree removed) and we fail to find new shelter, STOP the goal so wander can run.
- * - Roof-wander uses a small, clamped radius so it works under tiny shelters (trees).
+ * Visual shelter fixes:
+ * - Candidate must be visually dry at FEET + HEAD + ABOVE_HEAD (3 vertical samples)
+ * - Prefer deeper cover using a 3x3 neighborhood score at those 3 heights (max=27)
+ *
+ * Movement fix:
+ * - Tightened arrival threshold so mobs don't stop ~1 block short of the shelter target.
+ *
+ * Deep-cover fix:
+ * - Prefer / require a minimum "cover depth" (how many blocks from the nearest rainy edge).
+ * - Two-pass selection: strict (requires MIN_COVER_DEPTH_BLOCKS) then fallback (relaxed).
+ *
+ * Anti-crowding fix (NEW):
+ * - Occupancy-aware candidate selection: avoid selecting positions currently occupied by other CatoBaseMobs
+ *   to prevent "fighting" for the best spot.
+ *
+ * Calm-under-cover fix (NEW):
+ * - "Settle" timer: when already safely sheltered (dry + deep), the mob chills for a few seconds,
+ *   reducing micro-repathing and constant shuffling in groups.
+ *
+ * NOTE: Per your request, we did NOT add "immediate shelter when raining at here" bypass in canUse().
  */
 public class CatoRainShelterGoal extends Goal {
 
-    private static final double ARRIVAL_DIST_SQR = 2.25D; // ~1.5 blocks
+    // ✅ tighter arrival: prevents "stop 1 block short"
+    private static final double ARRIVAL_DIST_SQR = 0.36D; // ~0.6 blocks
+
+    // Hard cap for vertical ground scans (prevents worst-case spikes in weird terrain)
+    private static final int FIND_GROUND_MAX_STEPS = 64;
+
+    // 6–12 seconds cooldown after finishing a peek
+    private static final int POST_PEEK_COOLDOWN_MIN_TICKS = 120; // 6s
+    private static final int POST_PEEK_COOLDOWN_MAX_TICKS = 240; // 12s
+
+    // Allow brief rain crossing when heading to another roofed target
+    private static final int CROSS_TO_ROOF_GRACE_TICKS = 60; // 3s (tune: 20..60)
+
+    // Deep cover scoring:
+    // 3x3 neighborhood at 3 heights (feet/head/above_head) => max score = 27
+    private static final int MIN_DRY_NEIGHBORHOOD_SCORE = 20; // tune 20..26
+
+    // ✅ minimum "how deep inside the dry area" we want to stand
+    private static final int MIN_COVER_DEPTH_BLOCKS = 2; // tune: 2, 3, or 4
+
+    // ✅ how far we look outward to find the rainy edge
+    private static final int MAX_EDGE_SCAN = 5; // 4..8 is typical
+
+    // ✅ Anti-crowding: treat a stand position as occupied if another CatoBaseMob is basically on it
+    private static final double OCCUPIED_RADIUS = 0.65D; // blocks around the stand position
+    private static final int OCCUPIED_Y_INFLATE = 2;      // vertical tolerance
 
     private final CatoBaseMob mob;
 
@@ -33,11 +74,15 @@ public class CatoRainShelterGoal extends Goal {
 
     private @Nullable BlockPos shelterPos = null;       // anchor roofed spot
     private @Nullable BlockPos peekTargetPos = null;    // temporary "peek into rain" destination
+    private int postPeekCooldownTicks = 0;              // blocks repeated peeks
 
     // roofed-wander state
     private @Nullable BlockPos roofWanderTargetPos = null; // roofed “wander-like” target while sheltered
     private double roofWanderSpeed = 1.0D;                 // chosen walk/run speed for current target
     private int roofWanderCooldownTicks = 0;               // pacing between target picks
+
+    // if we are transitioning between two roofed areas, allow brief unroofed travel
+    private int crossToRoofGraceTicks = 0;
 
     private int lingerAfterRainTicks = 0;
     private int peekTicksRemaining = 0;
@@ -47,8 +92,11 @@ public class CatoRainShelterGoal extends Goal {
     // Peek scheduler (human-tunable)
     private long nextPeekAttemptTick = 0L;
 
-    // ✅ New: if we can't find shelter after roof disappears, release control so wander can run
+    // If we can't find shelter after roof disappears, release control so wander can run
     private boolean forceStop = false;
+
+    // ✅ Calm-under-cover: while settled, we refuse to shuffle/peek/repath
+    private int settleTicks = 0;
 
     public CatoRainShelterGoal(CatoBaseMob mob) {
         this.mob = mob;
@@ -56,97 +104,216 @@ public class CatoRainShelterGoal extends Goal {
     }
 
     // ------------------------------------------------------------
-    // Helpers to read SpeciesInfo (and clamp defensively)
+    // Helpers to read SpeciesInfo (cached) + clamp defensively
     // ------------------------------------------------------------
 
     private CatoMobSpeciesInfo info() {
-        return mob.getSpeciesInfo();
+        return mob.infoServer();
     }
 
-    private boolean enabled() {
-        return info().rainShelterEnabled();
+    private boolean enabled(CatoMobSpeciesInfo info) {
+        return info.rainShelterEnabled();
     }
 
-    private int attemptIntervalTicks() {
-        return Math.max(1, info().rainShelterAttemptIntervalTicks());
+    private int attemptIntervalTicks(CatoMobSpeciesInfo info) {
+        return Math.max(1, info.rainShelterAttemptIntervalTicks());
     }
 
-    private float attemptChance() {
-        return Mth.clamp(info().rainShelterAttemptChance(), 0f, 1f);
+    private float attemptChance(CatoMobSpeciesInfo info) {
+        return Mth.clamp(info.rainShelterAttemptChance(), 0f, 1f);
     }
 
-    private double searchRadiusBlocks() {
-        return Math.max(4.0D, info().rainShelterSearchRadiusBlocks());
+    private double searchRadiusBlocks(CatoMobSpeciesInfo info) {
+        return Math.max(4.0D, info.rainShelterSearchRadiusBlocks());
     }
 
-    private int searchAttempts() {
-        return Math.max(8, info().rainShelterSearchAttempts());
+    private int searchAttempts(CatoMobSpeciesInfo info) {
+        return Math.max(8, info.rainShelterSearchAttempts());
     }
 
-    private int roofScanMaxBlocks() {
-        return Math.max(1, info().rainShelterRoofScanMaxBlocks());
+    private int roofScanMaxBlocks(CatoMobSpeciesInfo info) {
+        return Math.max(1, info.rainShelterRoofScanMaxBlocks());
     }
 
-    private double runToShelterSpeed() {
-        return Math.max(0.05D, info().rainShelterRunToShelterSpeed());
+    private double runToShelterSpeed(CatoMobSpeciesInfo info) {
+        return Math.max(0.05D, info.rainShelterRunToShelterSpeed());
     }
 
-    private double rainWalkSpeed() {
-        return Math.max(0.05D, info().rainShelterWalkSpeed());
+    private double rainWalkSpeed(CatoMobSpeciesInfo info) {
+        return Math.max(0.05D, info.rainShelterWalkSpeed());
     }
 
-    private int lingerAfterRainCfgTicks() {
-        return Math.max(0, info().rainShelterLingerAfterRainTicks());
+    private int lingerAfterRainCfgTicks(CatoMobSpeciesInfo info) {
+        return Math.max(0, info.rainShelterLingerAfterRainTicks());
     }
 
-    // Peek is "avg interval" (human-tunable)
-    private int peekAvgIntervalTicks() {
-        return Math.max(0, info().rainShelterPeekAvgIntervalTicks());
+    private int peekAvgIntervalTicks(CatoMobSpeciesInfo info) {
+        return Math.max(0, info.rainShelterPeekAvgIntervalTicks());
     }
 
-    private int peekMinTicks() {
-        return Math.max(0, info().rainShelterPeekMinTicks());
+    private int peekMinTicks(CatoMobSpeciesInfo info) {
+        return Math.max(0, info.rainShelterPeekMinTicks());
     }
 
-    private int peekMaxTicks() {
-        return Math.max(peekMinTicks(), info().rainShelterPeekMaxTicks());
+    private int peekMaxTicks(CatoMobSpeciesInfo info) {
+        return Math.max(peekMinTicks(info), info.rainShelterPeekMaxTicks());
     }
 
-    private double peekDistMin() {
-        return Math.max(0.0D, info().rainShelterPeekDistanceMinBlocks());
+    private double peekDistMin(CatoMobSpeciesInfo info) {
+        return Math.max(0.0D, info.rainShelterPeekDistanceMinBlocks());
     }
 
-    private double peekDistMax() {
-        return Math.max(peekDistMin(), info().rainShelterPeekDistanceMaxBlocks());
+    private double peekDistMax(CatoMobSpeciesInfo info) {
+        return Math.max(peekDistMin(info), info.rainShelterPeekDistanceMaxBlocks());
     }
 
-    private int peekSearchAttempts() {
-        return Math.max(0, info().rainShelterPeekSearchAttempts());
+    private int peekSearchAttempts(CatoMobSpeciesInfo info) {
+        return Math.max(0, info.rainShelterPeekSearchAttempts());
     }
 
-    // Roof-wander uses the shuffle toggle + interval knobs
-    private boolean roofWanderEnabled() {
-        return enabled() && info().rainShelterShuffleEnabled();
+    private boolean roofWanderEnabled(CatoMobSpeciesInfo info) {
+        return enabled(info) && info.rainShelterShuffleEnabled();
     }
 
-    private int roofWanderIntervalMinTicks() {
-        return Math.max(1, info().rainShelterShuffleIntervalMinTicks());
+    private int roofWanderIntervalMinTicks(CatoMobSpeciesInfo info) {
+        return Math.max(1, info.rainShelterShuffleIntervalMinTicks());
     }
 
-    private int roofWanderIntervalMaxTicks() {
-        return Math.max(roofWanderIntervalMinTicks(), info().rainShelterShuffleIntervalMaxTicks());
+    private int roofWanderIntervalMaxTicks(CatoMobSpeciesInfo info) {
+        return Math.max(roofWanderIntervalMinTicks(info), info.rainShelterShuffleIntervalMaxTicks());
     }
 
-    private int roofWanderSearchAttempts() {
-        return Math.max(0, info().rainShelterShuffleSearchAttempts());
+    private int roofWanderSearchAttempts(CatoMobSpeciesInfo info) {
+        return Math.max(0, info.rainShelterShuffleSearchAttempts());
+    }
+
+    // ------------------------------------------------------------
+    // Surface preference scoring (water vs solid, soft vs hard)
+    // ------------------------------------------------------------
+
+    private double scoreSurfacePreference(CatoMobSpeciesInfo info, Level level, BlockPos stand) {
+        var pref = info.surfacePreference();
+        if (pref == null) return 0.0D;
+
+        boolean inWater = !level.getFluidState(stand).isEmpty();
+        BlockPos below = stand.below();
+        var belowState = level.getBlockState(below);
+
+        double score = 0.0D;
+
+        score += inWater ? pref.preferWaterSurfaceWeight() : pref.preferSolidSurfaceWeight();
+
+        if (!inWater) {
+            if (belowState.is(CMBlockTags.SOFT_GROUND)) score += pref.preferSoftGroundWeight();
+            if (belowState.is(CMBlockTags.HARD_GROUND)) score += pref.preferHardGroundWeight();
+        }
+
+        return score;
+    }
+
+    // ------------------------------------------------------------
+    // Visual dryness + deep cover heuristic
+    // ------------------------------------------------------------
+
+    /** Require FEET + HEAD + ABOVE_HEAD to be dry. */
+    private boolean isVisuallyDry(Level level, BlockPos stand) {
+        return !level.isRainingAt(stand)
+                && !level.isRainingAt(stand.above())
+                && !level.isRainingAt(stand.above(2));
+    }
+
+    /**
+     * 3x3 neighborhood dryness at FEET + HEAD + ABOVE_HEAD.
+     * Max = 27.
+     */
+    private int dryNeighborhoodScore(Level level, BlockPos stand) {
+        int score = 0;
+
+        BlockPos h1 = stand.above();
+        BlockPos h2 = stand.above(2);
+
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                BlockPos p0 = stand.offset(dx, 0, dz);
+                BlockPos p1 = h1.offset(dx, 0, dz);
+                BlockPos p2 = h2.offset(dx, 0, dz);
+
+                if (!level.isRainingAt(p0)) score++;
+                if (!level.isRainingAt(p1)) score++;
+                if (!level.isRainingAt(p2)) score++;
+            }
+        }
+
+        return score; // 0..27
+    }
+
+    /**
+     * How many blocks away is the nearest rainy edge?
+     * We scan in 8 directions; the "depth" is the minimum dry run length before hitting rain.
+     */
+    private int coverDepth(Level level, BlockPos stand) {
+        if (!isVisuallyDry(level, stand)) return 0;
+
+        // 8 directions (N,S,E,W + diagonals)
+        final int[][] dirs = new int[][]{
+                { 1,  0},
+                {-1,  0},
+                { 0,  1},
+                { 0, -1},
+                { 1,  1},
+                { 1, -1},
+                {-1,  1},
+                {-1, -1}
+        };
+
+        int bestMin = MAX_EDGE_SCAN;
+
+        for (int[] d : dirs) {
+            int dx = d[0];
+            int dz = d[1];
+
+            int dryRun = MAX_EDGE_SCAN;
+
+            for (int step = 1; step <= MAX_EDGE_SCAN; step++) {
+                BlockPos p = stand.offset(dx * step, 0, dz * step);
+                if (!isVisuallyDry(level, p)) {
+                    dryRun = step - 1;
+                    break;
+                }
+            }
+
+            bestMin = Math.min(bestMin, dryRun);
+            if (bestMin <= 0) return 0; // early out
+        }
+
+        return bestMin;
+    }
+
+    // ------------------------------------------------------------
+    // Anti-crowding
+    // ------------------------------------------------------------
+
+    private boolean isStandOccupied(Level level, BlockPos stand) {
+        // Occupied if another CatoBaseMob is basically on this block.
+        var box = new net.minecraft.world.phys.AABB(stand).inflate(OCCUPIED_RADIUS, OCCUPIED_Y_INFLATE, OCCUPIED_RADIUS);
+
+        var others = level.getEntitiesOfClass(
+                CatoBaseMob.class,
+                box,
+                e -> e != mob
+                        && e.isAlive()
+                        && e.distanceToSqr(stand.getX() + 0.5, stand.getY(), stand.getZ() + 0.5) < 1.0D
+        );
+
+        return !others.isEmpty();
     }
 
     // ------------------------------------------------------------
     // Goal gating
     // ------------------------------------------------------------
 
-    private boolean shouldConsiderRainBehavior() {
-        if (!enabled()) return false;
+    private boolean shouldConsiderRainBehavior(CatoMobSpeciesInfo info) {
+        if (!enabled(info)) return false;
         if (mob.level().isClientSide) return false;
 
         if (mob.isSleeping()) return false;
@@ -162,17 +329,10 @@ public class CatoRainShelterGoal extends Goal {
         return level.isRaining() && level.isRainingAt(pos);
     }
 
-    private boolean isRoofedHere(BlockPos standPos) {
-        return mob.isRoofed(standPos, roofScanMaxBlocks());
+    private boolean isRoofedHere(BlockPos standPos, int roofMax) {
+        return mob.isRoofed(standPos, roofMax);
     }
 
-    /**
-     * "Rain should matter here" gate:
-     * - World is in rain state
-     * - AND this biome can actually have precipitation (prevents savanna/desert sheltering)
-     *
-     * Note: we must NOT use isRainingAt(pos) here, because under a roof it becomes false.
-     */
     private boolean isWetWeatherPossibleHere(Level level, BlockPos pos) {
         if (!level.isRaining()) return false;
         return level.getBiome(pos).value().hasPrecipitation();
@@ -184,25 +344,27 @@ public class CatoRainShelterGoal extends Goal {
 
     @Override
     public boolean canUse() {
-        if (!shouldConsiderRainBehavior()) return false;
+        final CatoMobSpeciesInfo info = info();
+        if (!shouldConsiderRainBehavior(info)) return false;
 
-        Level level = mob.level();
-        BlockPos here = mob.blockPosition();
+        final Level level = mob.level();
+        final BlockPos here = mob.posServer();
 
         forceStop = false;
 
         if (!isWetWeatherPossibleHere(level, here)) return false;
 
-        boolean roofed = isRoofedHere(here);
+        final int roofMax = roofScanMaxBlocks(info);
+        final boolean roofed = isRoofedHere(here, roofMax);
 
         if (!roofed) {
-            long now = level.getGameTime();
+            final long now = mob.nowServer();
             if (now < nextAttemptTick) return false;
 
-            nextAttemptTick = now + attemptIntervalTicks();
-            if (mob.getRandom().nextFloat() >= attemptChance()) return false;
+            nextAttemptTick = now + attemptIntervalTicks(info);
+            if (mob.getRandom().nextFloat() >= attemptChance(info)) return false;
 
-            shelterPos = findNearbyRoofedStandPos(level);
+            shelterPos = findNearbyRoofedStandPos(info, level, roofMax);
             return shelterPos != null;
         }
 
@@ -211,13 +373,14 @@ public class CatoRainShelterGoal extends Goal {
 
     @Override
     public boolean canContinueToUse() {
-        if (!shouldConsiderRainBehavior()) return false;
+        final CatoMobSpeciesInfo info = info();
+        if (!shouldConsiderRainBehavior(info)) return false;
 
         if (forceStop) return false;
 
-        Level level = mob.level();
+        final Level level = mob.level();
 
-        if (!isWetWeatherPossibleHere(level, mob.blockPosition())) {
+        if (!isWetWeatherPossibleHere(level, mob.posServer())) {
             return lingerAfterRainTicks > 0 || mob.getNavigation().isInProgress();
         }
 
@@ -231,13 +394,19 @@ public class CatoRainShelterGoal extends Goal {
         peekTicksRemaining = 0;
         peekTargetPos = null;
 
+        postPeekCooldownTicks = POST_PEEK_COOLDOWN_MIN_TICKS;
+
         roofWanderTargetPos = null;
-        roofWanderSpeed = rainWalkSpeed();
+        roofWanderSpeed = rainWalkSpeed(info());
         roofWanderCooldownTicks = 0;
+
+        crossToRoofGraceTicks = 0;
 
         lingerAfterRainTicks = 0;
 
         forceStop = false;
+
+        settleTicks = 0;
 
         scheduleNextPeekAttempt();
     }
@@ -249,14 +418,19 @@ public class CatoRainShelterGoal extends Goal {
         shelterPos = null;
         peekTargetPos = null;
         peekTicksRemaining = 0;
+        postPeekCooldownTicks = 0;
 
         roofWanderTargetPos = null;
         roofWanderCooldownTicks = 0;
+
+        crossToRoofGraceTicks = 0;
 
         lingerAfterRainTicks = 0;
         repathCooldown = 0;
 
         forceStop = false;
+
+        settleTicks = 0;
 
         mob.setMoveMode(CatoBaseMob.MOVE_IDLE);
     }
@@ -268,23 +442,33 @@ public class CatoRainShelterGoal extends Goal {
 
     @Override
     public void tick() {
-        Level level = mob.level();
-        BlockPos here = mob.blockPosition();
+        final CatoMobSpeciesInfo info = info();
+        final Level level = mob.level();
+        final var nav = mob.getNavigation();
+        final var rng = mob.getRandom();
 
-        // Rain not relevant here -> linger then release
+        final BlockPos here = mob.posServer();
+        final long now = mob.nowServer();
+        final int roofMax = roofScanMaxBlocks(info);
+
         if (!isWetWeatherPossibleHere(level, here)) {
-            if (lingerAfterRainTicks <= 0) lingerAfterRainTicks = lingerAfterRainCfgTicks();
+            if (lingerAfterRainTicks <= 0) lingerAfterRainTicks = lingerAfterRainCfgTicks(info);
             else lingerAfterRainTicks--;
 
-            mob.getNavigation().stop();
+            nav.stop();
             mob.setMoveMode(CatoBaseMob.MOVE_IDLE);
             return;
         }
 
         if (repathCooldown > 0) repathCooldown--;
         if (roofWanderCooldownTicks > 0) roofWanderCooldownTicks--;
+        if (postPeekCooldownTicks > 0) postPeekCooldownTicks--;
+        if (crossToRoofGraceTicks > 0) crossToRoofGraceTicks--;
+        if (settleTicks > 0) settleTicks--;
 
+        // ------------------------------------------------------------
         // Peek in progress
+        // ------------------------------------------------------------
         if (peekTicksRemaining > 0) {
             peekTicksRemaining--;
 
@@ -293,45 +477,68 @@ public class CatoRainShelterGoal extends Goal {
             } else {
                 if (repathCooldown <= 0) {
                     repathCooldown = 10;
-                    moveTo(peekTargetPos, rainWalkSpeed());
+                    moveTo(nav, peekTargetPos, rainWalkSpeed(info));
                 }
 
-                mob.setMoveMode(mob.getNavigation().isInProgress() ? CatoBaseMob.MOVE_WALK : CatoBaseMob.MOVE_IDLE);
+                mob.setMoveMode(nav.isInProgress() ? CatoBaseMob.MOVE_WALK : CatoBaseMob.MOVE_IDLE);
 
                 if (peekTicksRemaining <= 0) {
                     peekTargetPos = null;
-                    mob.getNavigation().stop();
+                    nav.stop();
+
+                    postPeekCooldownTicks = randomBetween(rng, POST_PEEK_COOLDOWN_MIN_TICKS, POST_PEEK_COOLDOWN_MAX_TICKS);
+
                     scheduleNextPeekAttempt();
                 }
                 return;
             }
         }
 
-        // If not roofed -> go find shelter and run there
-        boolean roofedNow = isRoofedHere(here);
+        // ------------------------------------------------------------
+        // Roof check
+        // ------------------------------------------------------------
+        final boolean roofedNow = isRoofedHere(here, roofMax);
 
         if (!roofedNow) {
-            // roof disappeared at our anchor? re-find
-            if (shelterPos == null || !isRoofedHere(shelterPos)) {
-                shelterPos = findNearbyRoofedStandPos(level);
+            // If we're crossing between roofed areas, allow brief unroofed travel.
+            if (roofWanderTargetPos != null
+                    && crossToRoofGraceTicks > 0
+                    && isRoofedHere(roofWanderTargetPos, roofMax)) {
+
+                if (repathCooldown <= 0) {
+                    repathCooldown = 10;
+                    moveTo(nav, roofWanderTargetPos, Math.max(0.05D, roofWanderSpeed));
+                }
+
+                mob.setMoveMode(nav.isInProgress() ? CatoBaseMob.MOVE_WALK : CatoBaseMob.MOVE_IDLE);
+                return;
+            }
+
+            // Normal behavior: find shelter and run there
+            if (shelterPos == null
+                    || !isRoofedHere(shelterPos, roofMax)
+                    || !isVisuallyDry(level, shelterPos)
+                    || coverDepth(level, shelterPos) < MIN_COVER_DEPTH_BLOCKS) {
+
+                shelterPos = findNearbyRoofedStandPos(info, level, roofMax);
             }
 
             if (shelterPos == null) {
-                // ✅ Key fix:
-                // We couldn't find any shelter. Don't "hold" this goal forever (blocking wander).
-                // Stop controlling so lower-priority wander can run this tick onward.
-                mob.getNavigation().stop();
+                nav.stop();
                 mob.setMoveMode(CatoBaseMob.MOVE_IDLE);
                 forceStop = true;
                 return;
             }
 
+            // Calm-under-cover doesn't apply while we are exposed
+            settleTicks = 0;
+
             if (repathCooldown <= 0) {
                 repathCooldown = 10;
-                moveTo(shelterPos, runToShelterSpeed());
+                moveTo(nav, shelterPos, runToShelterSpeed(info));
             }
 
-            mob.setMoveMode(mob.getNavigation().isInProgress() ? CatoBaseMob.MOVE_RUN : CatoBaseMob.MOVE_IDLE);
+            mob.setMoveMode(nav.isInProgress() ? CatoBaseMob.MOVE_RUN : CatoBaseMob.MOVE_IDLE);
             mob.getLookControl().setLookAt(
                     shelterPos.getX() + 0.5,
                     shelterPos.getY() + 0.5,
@@ -340,8 +547,45 @@ public class CatoRainShelterGoal extends Goal {
             return;
         }
 
-        // Roofed now -> roof-wander + optional peek
+        // ------------------------------------------------------------
+        // Roofed now
+        // ------------------------------------------------------------
         if (shelterPos == null) shelterPos = here.immutable();
+
+        // ✅ If we're roofed but still not visually dry OR too close to edge, force a deeper shelter pick.
+        if (!isVisuallyDry(level, here) || coverDepth(level, here) < MIN_COVER_DEPTH_BLOCKS) {
+            BlockPos better = findNearbyRoofedStandPos(info, level, roofMax);
+            if (better != null) {
+                shelterPos = better;
+                roofWanderTargetPos = null;
+                roofWanderCooldownTicks = 0;
+                crossToRoofGraceTicks = 0;
+
+                settleTicks = 0;
+                repathCooldown = 0;
+                moveTo(nav, shelterPos, runToShelterSpeed(info));
+                mob.setMoveMode(CatoBaseMob.MOVE_RUN);
+                return;
+            }
+        }
+
+        // ✅ Calm-under-cover: if we're properly sheltered (dry + deep), chill for a short time.
+        // This prevents group "repath wars" and constant shuffling.
+        if (isVisuallyDry(level, here) && coverDepth(level, here) >= MIN_COVER_DEPTH_BLOCKS) {
+            if (settleTicks <= 0) {
+                settleTicks = randomBetween(rng, 60, 140); // 3–7 seconds calm
+            }
+
+            if (settleTicks > 0) {
+                // While settled: don't shuffle, don't peek, don't repath
+                roofWanderTargetPos = null;
+                crossToRoofGraceTicks = 0;
+
+                nav.stop();
+                mob.setMoveMode(CatoBaseMob.MOVE_IDLE);
+                return;
+            }
+        }
 
         // Keep moving to current roof-wander target
         if (roofWanderTargetPos != null) {
@@ -351,76 +595,88 @@ public class CatoRainShelterGoal extends Goal {
                     roofWanderTargetPos.getZ() + 0.5
             );
 
-            if (d <= ARRIVAL_DIST_SQR || !isRoofedHere(roofWanderTargetPos)) {
+            if (d <= ARRIVAL_DIST_SQR
+                    || !isRoofedHere(roofWanderTargetPos, roofMax)
+                    || !isVisuallyDry(level, roofWanderTargetPos)
+                    || coverDepth(level, roofWanderTargetPos) < MIN_COVER_DEPTH_BLOCKS
+                    || isStandOccupied(level, roofWanderTargetPos)) {
+
                 roofWanderTargetPos = null;
-                mob.getNavigation().stop();
+                crossToRoofGraceTicks = 0;
+                nav.stop();
             } else {
                 if (repathCooldown <= 0) {
                     repathCooldown = 10;
-                    moveTo(roofWanderTargetPos, roofWanderSpeed);
+                    moveTo(nav, roofWanderTargetPos, roofWanderSpeed);
                 }
 
-                mob.setMoveMode(mob.getNavigation().isInProgress() ? CatoBaseMob.MOVE_WALK : CatoBaseMob.MOVE_IDLE);
+                mob.setMoveMode(nav.isInProgress() ? CatoBaseMob.MOVE_WALK : CatoBaseMob.MOVE_IDLE);
                 return;
             }
         }
 
-        // Pick a new roofed target occasionally (only if roof-wander enabled)
-        if (roofWanderEnabled() && roofWanderCooldownTicks <= 0) {
-            roofWanderCooldownTicks = randomBetween(roofWanderIntervalMinTicks(), roofWanderIntervalMaxTicks());
+        // Pick a new roofed target occasionally
+        if (roofWanderEnabled(info) && roofWanderCooldownTicks <= 0) {
+            roofWanderCooldownTicks = randomBetween(rng, roofWanderIntervalMinTicks(info), roofWanderIntervalMaxTicks(info));
 
-            BlockPos t = findNearbyRoofedWanderPosSmallRadius(level, shelterPos);
+            BlockPos t = findNearbyRoofedWanderPosSmallRadius(info, level, shelterPos, roofMax);
             if (t != null && !t.equals(here)) {
                 roofWanderTargetPos = t;
-                roofWanderSpeed = chooseShelteredWanderSpeed(t);
+                roofWanderSpeed = chooseShelteredWanderSpeed(info, rng, t);
                 repathCooldown = 0;
 
-                moveTo(roofWanderTargetPos, roofWanderSpeed);
+                crossToRoofGraceTicks = CROSS_TO_ROOF_GRACE_TICKS;
+
+                moveTo(nav, roofWanderTargetPos, roofWanderSpeed);
                 mob.setMoveMode(CatoBaseMob.MOVE_WALK);
                 return;
             }
         }
 
         // Idle under roof
-        mob.getNavigation().stop();
+        nav.stop();
         mob.setMoveMode(CatoBaseMob.MOVE_IDLE);
 
-        tryStartPeek(level);
+        tryStartPeek(info, level, now, roofMax);
     }
 
     // ------------------------------------------------------------
-    // Peek scheduling (avg interval)
+    // Peek scheduling
     // ------------------------------------------------------------
 
     private void scheduleNextPeekAttempt() {
-        int avg = peekAvgIntervalTicks();
+        final CatoMobSpeciesInfo info = info();
+        int avg = peekAvgIntervalTicks(info);
         if (avg <= 0) {
             nextPeekAttemptTick = Long.MAX_VALUE;
             return;
         }
 
         int jitter = Math.max(1, avg / 4);
-        int delta = avg + randomBetweenSigned(-jitter, jitter);
+        int delta = avg + randomBetweenSigned(mob.getRandom(), -jitter, jitter);
         delta = Math.max(20, delta);
 
-        nextPeekAttemptTick = mob.level().getGameTime() + delta;
+        nextPeekAttemptTick = mob.nowServer() + delta;
     }
 
-    private void tryStartPeek(Level level) {
-        int avg = peekAvgIntervalTicks();
+    private void tryStartPeek(CatoMobSpeciesInfo info, Level level, long now, int roofMax) {
+        // While calm, no peeking
+        if (settleTicks > 0) return;
+
+        int avg = peekAvgIntervalTicks(info);
         if (avg <= 0) return;
 
-        long now = level.getGameTime();
+        if (postPeekCooldownTicks > 0) return;
         if (now < nextPeekAttemptTick) return;
 
         scheduleNextPeekAttempt();
 
-        BlockPos peek = findNearbyNotRoofedStandPos(level, shelterPos);
+        BlockPos peek = findNearbyNotRoofedStandPos(info, level, shelterPos, roofMax);
         if (peek != null) {
             peekTargetPos = peek;
-            peekTicksRemaining = randomBetween(peekMinTicks(), peekMaxTicks());
+            peekTicksRemaining = randomBetween(mob.getRandom(), peekMinTicks(info), peekMaxTicks(info));
             repathCooldown = 0;
-            moveTo(peekTargetPos, rainWalkSpeed());
+            moveTo(mob.getNavigation(), peekTargetPos, rainWalkSpeed(info));
         }
     }
 
@@ -428,8 +684,8 @@ public class CatoRainShelterGoal extends Goal {
     // Navigation helpers
     // ------------------------------------------------------------
 
-    private void moveTo(BlockPos standPos, double speed) {
-        mob.getNavigation().moveTo(
+    private void moveTo(net.minecraft.world.entity.ai.navigation.PathNavigation nav, BlockPos standPos, double speed) {
+        nav.moveTo(
                 standPos.getX() + 0.5D,
                 standPos.getY(),
                 standPos.getZ() + 0.5D,
@@ -437,88 +693,116 @@ public class CatoRainShelterGoal extends Goal {
         );
     }
 
-    private int randomBetween(int min, int max) {
+    private int randomBetween(net.minecraft.util.RandomSource rng, int min, int max) {
         int a = Math.max(0, min);
         int b = Math.max(a, max);
         if (b == a) return a;
-        return a + mob.getRandom().nextInt(b - a + 1);
+        return a + rng.nextInt(b - a + 1);
     }
 
-    private int randomBetweenSigned(int min, int max) {
+    private int randomBetweenSigned(net.minecraft.util.RandomSource rng, int min, int max) {
         int a = Math.min(min, max);
         int b = Math.max(min, max);
         if (a == b) return a;
-        return a + mob.getRandom().nextInt(b - a + 1);
+        return a + rng.nextInt(b - a + 1);
     }
 
     // ------------------------------------------------------------
     // Shelter / roof-wander finders
     // ------------------------------------------------------------
 
-    private @Nullable BlockPos findNearbyRoofedStandPos(Level level) {
+    private @Nullable BlockPos findNearbyRoofedStandPos(CatoMobSpeciesInfo info, Level level, int roofMax) {
         BlockPos center = (mob.shouldStayWithinHomeRadius() && mob.getHomePos() != null)
                 ? mob.getHomePos()
-                : mob.blockPosition();
+                : mob.posServer();
 
-        double radius = searchRadiusBlocks();
-        int attempts = searchAttempts();
-        int roofMax = roofScanMaxBlocks();
+        double radius = searchRadiusBlocks(info);
+        int attempts = searchAttempts(info);
 
-        BlockPos best = null;
-        double bestDist = Double.MAX_VALUE;
+        final var nav = mob.getNavigation();
+        final var rng = mob.getRandom();
+
+        // Two-pass: strict then fallback
+        BlockPos bestStrict = null;
+        double bestStrictScore = -Double.MAX_VALUE;
+
+        BlockPos bestFallback = null;
+        double bestFallbackScore = -Double.MAX_VALUE;
+
+        // fallback relax: don’t require depth, relax neighborhood a bit
+        final int relaxedNeighborhood = Math.max(0, MIN_DRY_NEIGHBORHOOD_SCORE - 6);
 
         for (int i = 0; i < attempts; i++) {
-            double ang = mob.getRandom().nextDouble() * (Math.PI * 2.0D);
-            double dist = mob.getRandom().nextDouble() * radius;
+            double ang = rng.nextDouble() * (Math.PI * 2.0D);
+            double dist = rng.nextDouble() * radius;
 
             int x = center.getX() + Mth.floor(Math.cos(ang) * dist);
             int z = center.getZ() + Mth.floor(Math.sin(ang) * dist);
-            int y = mob.blockPosition().getY() + 8;
+            int y = mob.posServer().getY() + 8;
 
             BlockPos probe = new BlockPos(x, y, z);
             BlockPos ground = findGround(level, probe);
             if (ground == null) continue;
 
             BlockPos stand = ground.above();
-
             if (!level.isEmptyBlock(stand)) continue;
-            if (mob.roofDistance(stand, roofMax) == -1) continue;
 
-            var path = mob.getNavigation().createPath(stand, 0);
+            if (mob.roofDistance(stand, roofMax) == -1) continue;
+            if (!isVisuallyDry(level, stand)) continue;
+
+            int neigh = dryNeighborhoodScore(level, stand);
+            int depth = coverDepth(level, stand);
+            boolean occupied = isStandOccupied(level, stand);
+
+            var path = nav.createPath(stand, 0);
             if (path == null || !path.canReach()) continue;
 
-            double d = mob.distanceToSqr(stand.getX() + 0.5, stand.getY(), stand.getZ() + 0.5);
-            if (d < bestDist) {
-                bestDist = d;
-                best = stand.immutable();
+            double d2 = mob.distanceToSqr(stand.getX() + 0.5, stand.getY(), stand.getZ() + 0.5);
+            double pref = scoreSurfacePreference(info, level, stand);
+
+            // Score: depth is king, then neighborhood, then preference, then distance
+            double score = (depth * 1000.0D) + (neigh * 10.0D) + (pref * 10.0D) - (d2 * 0.02D);
+
+            // Strict candidate: must be deep + good neighborhood + NOT occupied
+            if (!occupied && depth >= MIN_COVER_DEPTH_BLOCKS && neigh >= MIN_DRY_NEIGHBORHOOD_SCORE) {
+                if (score > bestStrictScore) {
+                    bestStrictScore = score;
+                    bestStrict = stand.immutable();
+                }
+            }
+
+            // Fallback candidate: allow occupied, but penalize hard so free spots win
+            if (neigh >= relaxedNeighborhood) {
+                double fallbackScore = score - (occupied ? 1500.0D : 0.0D);
+                if (fallbackScore > bestFallbackScore) {
+                    bestFallbackScore = fallbackScore;
+                    bestFallback = stand.immutable();
+                }
             }
         }
 
-        return best;
+        return (bestStrict != null) ? bestStrict : bestFallback;
     }
 
-    /**
-     * ✅ Roof-wander finder tuned for SMALL shelters:
-     * - Uses a clamped radius (0..min(wanderMax, 8))
-     * - This massively improves behavior under trees / small overhangs.
-     */
-    private @Nullable BlockPos findNearbyRoofedWanderPosSmallRadius(Level level, BlockPos anchor) {
-        int attempts = Math.max(8, roofWanderSearchAttempts());
-        int roofMax = roofScanMaxBlocks();
+    private @Nullable BlockPos findNearbyRoofedWanderPosSmallRadius(CatoMobSpeciesInfo info, Level level, BlockPos anchor, int roofMax) {
+        int attempts = Math.max(8, roofWanderSearchAttempts(info));
 
-        double max = Math.max(1.5D, info().wanderMaxRadius());
-        max = Math.min(max, 8.0D); // <-- key clamp
+        double max = Math.max(1.5D, info.wanderMaxRadius());
+        max = Math.min(max, 8.0D);
 
         BlockPos best = null;
-        double bestDist = Double.MAX_VALUE;
+        double bestScore = -Double.MAX_VALUE;
+
+        final var nav = mob.getNavigation();
+        final var rng = mob.getRandom();
 
         for (int i = 0; i < attempts; i++) {
-            double ang = mob.getRandom().nextDouble() * (Math.PI * 2.0D);
-            double dist = mob.getRandom().nextDouble() * max; // 0..max
+            double ang = rng.nextDouble() * (Math.PI * 2.0D);
+            double dist = rng.nextDouble() * max;
 
             int x = anchor.getX() + Mth.floor(Math.cos(ang) * dist);
             int z = anchor.getZ() + Mth.floor(Math.sin(ang) * dist);
-            int y = mob.blockPosition().getY() + 6;
+            int y = mob.posServer().getY() + 6;
 
             BlockPos probe = new BlockPos(x, y, z);
             BlockPos ground = findGround(level, probe);
@@ -528,13 +812,26 @@ public class CatoRainShelterGoal extends Goal {
             if (!level.isEmptyBlock(stand)) continue;
 
             if (mob.roofDistance(stand, roofMax) == -1) continue;
+            if (!isVisuallyDry(level, stand)) continue;
 
-            var path = mob.getNavigation().createPath(stand, 0);
+            int neigh = dryNeighborhoodScore(level, stand);
+            int depth = coverDepth(level, stand);
+            if (depth < MIN_COVER_DEPTH_BLOCKS) continue;
+            if (neigh < MIN_DRY_NEIGHBORHOOD_SCORE) continue;
+
+            // ✅ Avoid picking a tile that is already occupied to reduce shoving
+            if (isStandOccupied(level, stand)) continue;
+
+            var path = nav.createPath(stand, 0);
             if (path == null || !path.canReach()) continue;
 
-            double d = mob.distanceToSqr(stand.getX() + 0.5, stand.getY(), stand.getZ() + 0.5);
-            if (d < bestDist) {
-                bestDist = d;
+            double pref = scoreSurfacePreference(info, level, stand);
+            double d2 = mob.distanceToSqr(stand.getX() + 0.5, stand.getY(), stand.getZ() + 0.5);
+
+            double score = (depth * 1000.0D) + (neigh * 10.0D) + (pref * 10.0D) - (d2 * 0.02D);
+
+            if (score > bestScore) {
+                bestScore = score;
                 best = stand.immutable();
             }
         }
@@ -542,12 +839,12 @@ public class CatoRainShelterGoal extends Goal {
         return best;
     }
 
-    private double chooseShelteredWanderSpeed(BlockPos target) {
-        double walk = Math.max(0.05D, info().wanderWalkSpeed());
-        double run = Math.max(walk, info().wanderRunSpeed());
-        float runChance = Mth.clamp(info().wanderRunChance(), 0f, 1f);
+    private double chooseShelteredWanderSpeed(CatoMobSpeciesInfo info, net.minecraft.util.RandomSource rng, BlockPos target) {
+        double walk = Math.max(0.05D, info.wanderWalkSpeed());
+        double run = Math.max(walk, info.wanderRunSpeed());
+        float runChance = Mth.clamp(info.wanderRunChance(), 0f, 1f);
 
-        double threshold = info().wanderRunDistanceThreshold();
+        double threshold = info.wanderRunDistanceThreshold();
         if (threshold > 0.0D) {
             double d = mob.distanceToSqr(target.getX() + 0.5, target.getY(), target.getZ() + 0.5);
             if (d < (threshold * threshold)) {
@@ -555,23 +852,27 @@ public class CatoRainShelterGoal extends Goal {
             }
         }
 
-        return (mob.getRandom().nextFloat() < runChance) ? run : walk;
+        return (rng.nextFloat() < runChance) ? run : walk;
     }
 
-    private @Nullable BlockPos findNearbyNotRoofedStandPos(Level level, BlockPos from) {
-        double min = peekDistMin();
-        double max = peekDistMax();
+    private @Nullable BlockPos findNearbyNotRoofedStandPos(CatoMobSpeciesInfo info, Level level, BlockPos from, int roofMax) {
+        // While calm, no peeking
+        if (settleTicks > 0) return null;
 
-        int attempts = Math.max(8, peekSearchAttempts());
-        int roofMax = roofScanMaxBlocks();
+        double min = peekDistMin(info);
+        double max = peekDistMax(info);
+
+        int attempts = Math.max(8, peekSearchAttempts(info));
+        final var nav = mob.getNavigation();
+        final var rng = mob.getRandom();
 
         for (int i = 0; i < attempts; i++) {
-            double ang = mob.getRandom().nextDouble() * (Math.PI * 2.0D);
-            double dist = (max <= min) ? min : (min + mob.getRandom().nextDouble() * (max - min));
+            double ang = rng.nextDouble() * (Math.PI * 2.0D);
+            double dist = (max <= min) ? min : (min + rng.nextDouble() * (max - min));
 
             int x = from.getX() + Mth.floor(Math.cos(ang) * dist);
             int z = from.getZ() + Mth.floor(Math.sin(ang) * dist);
-            int y = mob.blockPosition().getY() + 8;
+            int y = mob.posServer().getY() + 8;
 
             BlockPos probe = new BlockPos(x, y, z);
             BlockPos ground = findGround(level, probe);
@@ -582,9 +883,12 @@ public class CatoRainShelterGoal extends Goal {
 
             if (mob.roofDistance(stand, roofMax) != -1) continue;
 
-            if (!isRainingHere(level, stand)) continue;
+            // "peek" should actually be rainy somewhere on the body
+            if (!isRainingHere(level, stand)
+                    && !isRainingHere(level, stand.above())
+                    && !isRainingHere(level, stand.above(2))) continue;
 
-            var path = mob.getNavigation().createPath(stand, 0);
+            var path = nav.createPath(stand, 0);
             if (path == null || !path.canReach()) continue;
 
             return stand.immutable();
@@ -596,11 +900,17 @@ public class CatoRainShelterGoal extends Goal {
     private @Nullable BlockPos findGround(Level level, BlockPos start) {
         BlockPos pos = start;
 
-        while (pos.getY() < level.getMaxBuildHeight() && !level.isEmptyBlock(pos)) {
+        int steps = 0;
+        while (steps++ < FIND_GROUND_MAX_STEPS
+                && pos.getY() < level.getMaxBuildHeight()
+                && !level.isEmptyBlock(pos)) {
             pos = pos.above();
         }
 
-        while (pos.getY() > level.getMinBuildHeight() && level.isEmptyBlock(pos)) {
+        steps = 0;
+        while (steps++ < FIND_GROUND_MAX_STEPS
+                && pos.getY() > level.getMinBuildHeight()
+                && level.isEmptyBlock(pos)) {
             pos = pos.below();
         }
 

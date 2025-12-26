@@ -34,27 +34,31 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
             CatoMobSpeciesInfoBuilder.create()
                     .identity(CatoMobMovementType.LAND, CatoMobTemperament.NEUTRAL, CatoMobSizeCategory.SMALL)
                     // render
-                    .shadow(1.0f)
+                    .shadow(0.4f)
                     // fleeing
-                    .flee(true, false, 4.0F, true, 20 * 30, 20 * 10, 1.35D, 20.0D)
+                    .flee(false, true, 4.0F, false, 20 * 30, 20 * 10, 1.35D, 20.0D)
                     .groupFlee(true,12.0D,10,false)
                     .groupFleeAllies(false, Set.of(CMEntities.PIKACHU_MALE.get())) // true(, null) = all catomobs are allies
 
                     // retaliation
-                    .retaliation(false,20 * 9)
+                    .retaliation(true,20 * 9)
                     // Core Tuning
                     .core(8.0D, 1.0D, 0.30D, 16.0D, 0.08D)
                     .combat(2.0D, 4.0D, 70, 60, 30)
                     .chaseSpeed(1.60D)
                     .moveDuringAttackAnimation(false)
                     .attackMoveWindow(0,0)
-                    .wander(1.0D, 1.35D, 0.25F, 3.0D, 32.0D)
+                    .wander(1.0D, 1.35D, 0.35F, 3.0D, 32.0D)
+                    .wanderAttempts(100,0.75f)
+                    .preferSoftLand()
+                    .surfacePreference(-0.5D, 1.5D,1.0D,0.0D)
                     .home(true, 96.0D)
-                    .wanderRunDistanceThreshold(16.0D)
+                    .wanderRunDistanceThreshold(10.0D)
 
                     // Water (speed + "feel")
-                    .waterSwimSpeedMultiplier(1.8D)
+                    .waterSwimSpeedMultiplier(2.2D)
                     .waterMovement(true, 0.7D, 0.4D, 0.2D)
+                    .funSwim(true,true, true,20*30,1.0f,20*10,12.0D,24)
 
                     // Sleep
                     .sleepWindow(true, true, false)
@@ -76,18 +80,18 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
                     .sleepSearch(400, 32, 1, 12, 20 * 10, 20 * 3, 2.0D, 0.0D, true, true)
 
                     // Rain shelter (seek roof while raining)
-                    .rainShelter(true, 20 * 5, 0.35f, 24.0D, 32, 12, 1.35D, 1.00D, 20 * 2)
+                    .rainShelter(true, 20 * 2, 1.0f, 28.0D, 46, 12, 1.35D, 1.00D, 20 * 5)
 
                     // Peek behavior (optional “step out into rain, then return”)
-                    .rainShelterPeek(240, 20 * 3, 20 * 8, 2.0D, 8.0D, 16)
+                    .rainShelterPeek(20 * 20, 20 * 3, 20 * 5, 2.0D, 6.0D, 16)
 
                     // Shuffle under roof (your “don’t stand still”)
-                    .rainShelterShuffle(true, 20 * 5, 20 * 10, 16)
+                    .rainShelterShuffle(true, 20 * 30, 20 * 50, 16)
 
                     .build();
 
     @Override
-    protected CatoMobSpeciesInfo getSpeciesInfo() {
+    public CatoMobSpeciesInfo getSpeciesInfo() {
         return SPECIES_INFO;
     }
 

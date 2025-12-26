@@ -19,6 +19,9 @@ public class CatoMeleeAttackGoal extends Goal {
     private int attackCooldown;
     private int ticksUntilNextPathRecalc;
 
+    // cached per-goal-run
+    private double triggerRangeSqr = 4.0D; // default 2 blocks
+
     public CatoMeleeAttackGoal(CatoBaseMob mob, double speedModifier, boolean followEvenIfNotSeen, int attackCooldownTicks) {
         this.mob = mob;
         this.speedModifier = speedModifier;
@@ -31,8 +34,8 @@ public class CatoMeleeAttackGoal extends Goal {
         // FLEE OVERRIDES COMBAT
         if (this.mob.isFleeing()) return false;
 
-        CatoMobSpeciesInfo info = this.mob.getSpeciesInfo();
-        CatoMobTemperament t = info.temperament();
+        final CatoMobSpeciesInfo info = this.mob.infoServer();
+        final CatoMobTemperament t = info.temperament();
 
         // Hostile: allowed to attack whenever it has a valid target
         if (t == CatoMobTemperament.HOSTILE) return true;
@@ -42,41 +45,48 @@ public class CatoMeleeAttackGoal extends Goal {
         return this.mob.angerTime > 0;
     }
 
+    private static boolean isInvalidPlayerTarget(LivingEntity target) {
+        if (!(target instanceof Player p)) return false;
+        return p.isCreative() || p.isSpectator();
+    }
+
     @Override
     public boolean canUse() {
-        LivingEntity target = this.mob.getTarget();
+        final LivingEntity target = this.mob.getTarget();
         if (target == null || !target.isAlive()) return false;
-
-        if (target instanceof Player p && (p.isCreative() || p.isSpectator())) return false;
+        if (isInvalidPlayerTarget(target)) return false;
 
         if (!canAttackNow()) return false;
 
-        return this.mob.isWithinRestriction(target.blockPosition());
+        final var targetPos = target.blockPosition();
+        return this.mob.isWithinRestriction(targetPos);
     }
 
     @Override
     public boolean canContinueToUse() {
-        LivingEntity target = this.mob.getTarget();
+        final LivingEntity target = this.mob.getTarget();
         if (target == null || !target.isAlive()) return false;
+        if (isInvalidPlayerTarget(target)) return false;
 
         if (!canAttackNow()) return false;
 
-        if (!this.mob.isWithinRestriction(target.blockPosition())) return false;
-
-        if (target instanceof Player player) {
-            if (player.isCreative() || player.isSpectator()) return false;
-        }
-
-        return true;
+        final var targetPos = target.blockPosition();
+        return this.mob.isWithinRestriction(targetPos);
     }
 
     @Override
     public void start() {
-        LivingEntity target = this.mob.getTarget();
+        final LivingEntity target = this.mob.getTarget();
         if (target != null) {
             this.mob.getNavigation().moveTo(target, this.speedModifier);
             this.mob.onChaseStart(target);
         }
+
+        // cache trigger range for this run
+        final CatoMobSpeciesInfo info = this.mob.infoServer();
+        double trigger = info.attackTriggerRange();
+        if (trigger <= 0.0D) trigger = 2.0D;
+        this.triggerRangeSqr = trigger * trigger;
 
         this.mob.setAggressive(true);
         this.ticksUntilNextPathRecalc = 0;
@@ -85,7 +95,7 @@ public class CatoMeleeAttackGoal extends Goal {
 
     @Override
     public void stop() {
-        LivingEntity target = this.mob.getTarget();
+        final LivingEntity target = this.mob.getTarget();
 
         if (target != null && !EntitySelector.NO_CREATIVE_OR_SPECTATOR.test(target)) {
             this.mob.setTarget(null);
@@ -104,26 +114,32 @@ public class CatoMeleeAttackGoal extends Goal {
 
     @Override
     public void tick() {
-        LivingEntity target = this.mob.getTarget();
+        final LivingEntity target = this.mob.getTarget();
         if (target == null) return;
 
-        CatoMobSpeciesInfo info = this.mob.getSpeciesInfo();
+        // state can change while goal is running
+        if (isInvalidPlayerTarget(target) || !canAttackNow()) {
+            this.mob.getNavigation().stop();
+            this.mob.setMoveMode(CatoBaseMob.MOVE_IDLE);
+            this.mob.onChaseTick(target, false);
+            return;
+        }
+
+        // local aliases (micro-optimizations / readability)
+        final var nav = this.mob.getNavigation();
+        final var rng = this.mob.getRandom();
+        final var sensing = this.mob.getSensing();
 
         this.mob.getLookControl().setLookAt(target, 30.0F, 30.0F);
 
-        double distSqr = this.mob.distanceToSqr(target.getX(), target.getY(), target.getZ());
-
-        double trigger = info.attackTriggerRange();
-        if (trigger <= 0.0D) trigger = 2.0D;
-        double triggerSqr = trigger * trigger;
-
-        boolean inTriggerRange = distSqr <= triggerSqr;
+        final double distSqr = this.mob.distanceToSqr(target);
+        final boolean inTriggerRange = distSqr <= this.triggerRangeSqr;
 
         // ------------------------------------------------------------
         // Movement gating during attack animation (delay + stop window)
         // ------------------------------------------------------------
         if (this.mob.isAttacking() && !this.mob.canMoveDuringCurrentAttackAnimTick()) {
-            this.mob.getNavigation().stop();
+            nav.stop();
             this.ticksUntilNextPathRecalc = 4;
 
             if (this.attackCooldown > 0) this.attackCooldown--;
@@ -137,30 +153,30 @@ public class CatoMeleeAttackGoal extends Goal {
         // Normal chase/pathing
         // ------------------------------------------------------------
         if (inTriggerRange) {
-            this.mob.getNavigation().stop();
+            nav.stop();
             this.ticksUntilNextPathRecalc = 4;
         } else {
-            if (this.mob.getNavigation().isDone()) {
+            if (nav.isDone()) {
                 this.ticksUntilNextPathRecalc = 0;
             }
 
             this.ticksUntilNextPathRecalc = Math.max(this.ticksUntilNextPathRecalc - 1, 0);
 
             if (this.ticksUntilNextPathRecalc == 0) {
-                boolean canSee = this.mob.getSensing().hasLineOfSight(target);
+                final boolean canSee = sensing.hasLineOfSight(target);
 
                 if (!canSee && !this.followEvenIfNotSeen) {
-                    this.mob.getNavigation().stop();
+                    nav.stop();
                     this.ticksUntilNextPathRecalc = 4;
                 } else {
-                    boolean started = this.mob.getNavigation().moveTo(target, this.speedModifier);
+                    final boolean started = nav.moveTo(target, this.speedModifier);
 
                     if (!started) {
                         this.ticksUntilNextPathRecalc = 1;
                     } else {
-                        this.ticksUntilNextPathRecalc = (distSqr > 16 * 16)
-                                ? (2 + this.mob.getRandom().nextInt(3))
-                                : (4 + this.mob.getRandom().nextInt(7));
+                        this.ticksUntilNextPathRecalc = (distSqr > 256.0D) // 16*16
+                                ? (2 + rng.nextInt(3))
+                                : (4 + rng.nextInt(7));
                     }
                 }
             }
@@ -176,18 +192,9 @@ public class CatoMeleeAttackGoal extends Goal {
         }
 
         // MOVE_MODE sync
-        boolean moving = this.mob.getNavigation().isInProgress();
+        final boolean moving = nav.isInProgress();
         this.mob.setMoveMode(moving ? CatoBaseMob.MOVE_RUN : CatoBaseMob.MOVE_IDLE);
 
         this.mob.onChaseTick(target, moving);
-    }
-
-    protected double getAttackReachSqr(LivingEntity target) {
-        CatoMobSpeciesInfo info = this.mob.getSpeciesInfo();
-
-        double hitRange = info.attackHitRange();
-        if (hitRange <= 0.0D) hitRange = 2.0D;
-
-        return hitRange * hitRange;
     }
 }

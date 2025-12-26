@@ -1,85 +1,42 @@
 package com.chriskatze.catomobs.entity.base;
 
+import com.chriskatze.catomobs.entity.CatoMobMovementType;
+import com.chriskatze.catomobs.entity.CatoMobSpeciesInfo;
+import com.chriskatze.catomobs.registry.CMBlockTags;
 import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.phys.Vec3;
 
 import java.util.EnumSet;
 
 /**
  * CatoWanderGoal
- *
- * Purpose:
- * A custom "random stroll" (wander) goal that supports:
- * - walk vs run selection (with chance and/or distance threshold)
- * - staying within a "home radius" if the mob species enables it
- * - syncing an authoritative MOVE_MODE (IDLE/WALK/RUN) to the client for animations
- * - calling generic hooks on the mob (onWanderStart/Stop) for extra cosmetics/logic
- *
- * Why not vanilla RandomStrollGoal:
- * Vanilla goals don't know about your custom MOVE_MODE syncing and your per-species tuning
- * (run chance, min/max radii, forced run beyond a distance, home radius behavior).
- *
- * High-level flow:
- * 1) canUse():
- *    - Only starts if mob is idle (no current navigation) and passes a random tick roll.
- *    - Chooses a random target position via pickPosition().
- *    - pickPosition() also decides whether this wander will be walking or running.
- * 2) start():
- *    - Sets MOVE_MODE to WALK or RUN (authoritative state used by animations).
- *    - Calls mob.onWanderStart(running).
- *    - Starts navigation to the chosen wantedX/Y/Z.
- * 3) canContinueToUse():
- *    - Continues while navigation reports "in progress".
- * 4) tick():
- *    - Keeps MOVE_MODE in sync with actual navigation status.
- *      (Useful because pathing can finish early or get interrupted.)
- * 5) stop():
- *    - Resets MOVE_MODE to IDLE and calls mob.onWanderStop().
  */
 public class CatoWanderGoal extends Goal {
 
-    /** The owning mob (gives access to navigation, home radius, hooks, synced move mode, etc.) */
     private final CatoBaseMob mob;
 
-    // ------------------------------------------------------------
-    // Wander tuning (usually comes from species info)
-    // ------------------------------------------------------------
-
-    /** Navigation speed used for "walk" wandering. */
     private final double walkSpeed;
-
-    /** Navigation speed used for "run" wandering. */
     private final double runSpeed;
-
-    /** Chance (0..1) that a wander becomes a run (if not forced by distance). */
     private final float runChance;
-
-    /** Minimum random wander distance from the chosen center. */
     private final double minRadius;
-
-    /** Maximum random wander distance from the chosen center. */
     private final double maxRadius;
-
-    /**
-     * If > 0: any chosen wander target at/above this distance forces running.
-     * If <= 0: disabled, only runChance decides.
-     */
     private final double runDistanceThreshold;
 
-    // ------------------------------------------------------------
-    // Chosen target for this wander instance
-    // ------------------------------------------------------------
-
-    /** Destination coordinates we picked in canUse() / pickPosition(). */
     private double wantedX;
     private double wantedY;
     private double wantedZ;
 
-    /** Whether THIS wander instance is considered "running". */
     private boolean running;
+
+    private int notMovingTicks = 0;
+
+    // ✅ NEW: attempt pacing (like sleep), stored per-goal per-mob
+    private long nextWanderAttemptTick = 0L;
+
+    // Reused mutable to avoid BlockPos allocations in pickPosition/findGround
+    private final BlockPos.MutableBlockPos scratch = new BlockPos.MutableBlockPos();
 
     public CatoWanderGoal(
             CatoBaseMob mob,
@@ -98,18 +55,9 @@ public class CatoWanderGoal extends Goal {
         this.maxRadius = maxRadius;
         this.runDistanceThreshold = runDistanceThreshold;
 
-        // This goal moves the mob, so it claims MOVE.
         this.setFlags(EnumSet.of(Flag.MOVE));
     }
 
-    /**
-     * Determines whether we should START wandering right now.
-     *
-     * Vanilla-like behavior:
-     * - requires no current path (navigation done)
-     * - uses a random roll to not wander every tick
-     * - picks a random nearby destination
-     */
     @Override
     public boolean canUse() {
         if (mob.isSleeping()) return false;
@@ -119,16 +67,26 @@ public class CatoWanderGoal extends Goal {
 
         if (mob.isPassenger() || mob.isVehicle()) return false;
         if (!mob.getNavigation().isDone()) return false;
-        if (mob.getRandom().nextInt(100) != 0) return false;
 
-        Vec3 target = this.pickPosition();
-        if (target == null) return false;
+        final CatoMobSpeciesInfo info = mob.infoServer();
+        final long now = mob.nowServer();
 
-        this.wantedX = target.x;
-        this.wantedY = target.y;
-        this.wantedZ = target.z;
+        // ✅ Interval gate (pacing)
+        if (now < nextWanderAttemptTick) return false;
 
-        return true;
+        final int interval = Math.max(1, info.wanderAttemptIntervalTicks());
+        final float chance = clamp01(info.wanderAttemptChance());
+
+        // Schedule next attempt immediately (even if we fail chance/pick)
+        // Spread attempts across ticks so big herds don't spike on the same tick.
+        nextWanderAttemptTick = now + interval + (mob.getId() & 7);
+
+        // Chance roll only once per interval (not every tick)
+        if (chance <= 0.0F) return false;
+        if (chance < 1.0F && mob.getRandom().nextFloat() >= chance) return false;
+
+        // Allocation-free picker; sets wantedX/Y/Z + running
+        return this.pickPositionAndStore();
     }
 
     @Override
@@ -141,60 +99,28 @@ public class CatoWanderGoal extends Goal {
         return mob.getNavigation().isInProgress();
     }
 
-    /**
-     * Called once when the goal starts.
-     * Sets authoritative MOVE_MODE, calls hook, and begins navigation.
-     */
     @Override
     public void start() {
-        // Choose the correct navigation speed based on whether this wander instance is running.
         double speed = running ? runSpeed : walkSpeed;
 
-        // ------------------------------------------------------------
-        // AUTHORITATIVE move-mode sync (client animations use this)
-        // ------------------------------------------------------------
-        mob.setMoveMode(running
-                ? CatoBaseMob.MOVE_RUN
-                : CatoBaseMob.MOVE_WALK
-        );
-
-        // Hook for subclasses / per-mob cosmetics (e.g. particles, sound, toggles).
+        mob.setMoveMode(running ? CatoBaseMob.MOVE_RUN : CatoBaseMob.MOVE_WALK);
         mob.onWanderStart(running);
 
-        // Start walking/running to the chosen target.
         mob.getNavigation().moveTo(this.wantedX, this.wantedY, this.wantedZ, speed);
     }
 
-    /**
-     * Called once when the goal ends (path finished, interrupted, replaced by higher priority goal, etc.).
-     * Resets authoritative MOVE_MODE and calls the stop hook.
-     */
     @Override
     public void stop() {
-        // IMPORTANT: stop the path so a previous run-speed path can't keep executing
         mob.getNavigation().stop();
 
         mob.setMoveMode(CatoBaseMob.MOVE_IDLE);
         mob.onWanderStop();
     }
 
-    /**
-     * We want tick() every tick so MOVE_MODE stays correct even when pathing "micro-stops".
-     */
     @Override
     public boolean requiresUpdateEveryTick() {
         return true;
     }
-
-    /**
-     * Runs every tick while the goal is active.
-     * Keeps MOVE_MODE in sync with actual navigation status.
-     *
-     * Why we do this:
-     * Navigation can sometimes temporarily flip state during repaths/stutters.
-     * This makes the client-side animation state more stable and correct.
-     */
-    private int notMovingTicks = 0;
 
     @Override
     public void tick() {
@@ -202,7 +128,7 @@ public class CatoWanderGoal extends Goal {
 
         if (!moving) {
             notMovingTicks++;
-            if (notMovingTicks >= 2) { // 2–3 ticks is usually enough
+            if (notMovingTicks >= 2) {
                 mob.setMoveMode(CatoBaseMob.MOVE_IDLE);
             }
             return;
@@ -212,92 +138,101 @@ public class CatoWanderGoal extends Goal {
         mob.setMoveMode(running ? CatoBaseMob.MOVE_RUN : CatoBaseMob.MOVE_WALK);
     }
 
-    // -----------------------------
-    // Position picking with home radius
-    // -----------------------------
+    private boolean pickPositionAndStore() {
+        final Level level = mob.level();
+        final CatoMobSpeciesInfo info = mob.infoServer(); // uses your tick cache when available
+        final CatoMobMovementType moveType = info.movementType();
+        final var pref = info.surfacePreference();
 
-    /**
-     * Picks a random valid destination around a "center".
-     *
-     * Center logic:
-     * - If the mob has "stayWithinHomeRadius" enabled and a homePos is set, we wander around homePos.
-     * - Otherwise, we wander around the mob's current position.
-     *
-     * Validation:
-     * - must respect home radius (if enabled)
-     * - must find ground and have space above it
-     *
-     * Side effect:
-     * - calls decideRunOrWalk(dist) to decide whether THIS wander instance will run.
-     */
-    private Vec3 pickPosition() {
-        Level level = mob.level();
+        final BlockPos centerPos = (mob.shouldStayWithinHomeRadius() && mob.getHomePos() != null)
+                ? mob.getHomePos()
+                : mob.posServer(); // cached
 
-        // Choose the center point for wandering.
-        BlockPos center;
-        if (mob.shouldStayWithinHomeRadius() && mob.getHomePos() != null) {
-            center = mob.getHomePos();
-        } else {
-            center = mob.blockPosition();
-        }
+        final int centerX = centerPos.getX();
+        final int centerZ = centerPos.getZ();
 
-        // Precompute home radius constraint if enabled.
-        double homeRadius = mob.shouldStayWithinHomeRadius() ? mob.getHomeRadius() : Double.MAX_VALUE;
-        double homeRadiusSqr = homeRadius * homeRadius;
+        final boolean clampToHome = mob.shouldStayWithinHomeRadius() && mob.getHomePos() != null;
+        final double homeRadius = clampToHome ? mob.getHomeRadius() : Double.MAX_VALUE;
+        final double homeRadiusSqr = homeRadius * homeRadius;
 
-        // Try several random samples to find something valid.
+        // Match your original intent: use current block position Y, search a bit above
+        final int baseY = mob.posServer().getY();
+
+        int bestX = 0, bestY = 0, bestZ = 0;
+        double bestScore = -Double.MAX_VALUE;
+        double bestDist = 0.0D;
+
         for (int attempt = 0; attempt < 10; attempt++) {
-            // Random angle + distance in [minRadius..maxRadius]
             double angle = mob.getRandom().nextDouble() * (Math.PI * 2.0D);
             double dist = this.minRadius + mob.getRandom().nextDouble() * (this.maxRadius - this.minRadius);
 
             double dx = Math.cos(angle) * dist;
             double dz = Math.sin(angle) * dist;
 
-            int x = center.getX() + Mth.floor(dx);
-            int z = center.getZ() + Mth.floor(dz);
-            int y = mob.blockPosition().getY() + 8; // start a bit above the mob, then drop
+            int x = centerX + Mth.floor(dx);
+            int z = centerZ + Mth.floor(dz);
+            int y = baseY + 8;
 
-            BlockPos pos = new BlockPos(x, y, z);
+            if (clampToHome) {
+                int dxHome = x - centerX;
+                int dzHome = z - centerZ;
+                if ((double) (dxHome * dxHome + dzHome * dzHome) > homeRadiusSqr) continue;
+            }
 
-            // Enforce home circle if enabled (keeps mobs from drifting too far away).
-            if (mob.shouldStayWithinHomeRadius()) {
-                int dxHome = x - center.getX();
-                int dzHome = z - center.getZ();
-                if ((double)(dxHome * dxHome + dzHome * dzHome) > homeRadiusSqr) {
-                    continue;
+            int groundY = findGroundY(level, x, y, z);
+            if (groundY == Integer.MIN_VALUE) continue;
+
+            scratch.set(x, groundY, z);
+            if (moveType == CatoMobMovementType.LAND) {
+                if (!level.getFluidState(scratch).isEmpty()) continue;
+            }
+
+            int standY = groundY + 1;
+
+            scratch.set(x, standY, z);
+            if (!level.isEmptyBlock(scratch)) continue;
+
+            if (moveType == CatoMobMovementType.LAND) {
+                if (!level.getFluidState(scratch).isEmpty()) continue;
+            }
+
+            double prefScore = 0.0D;
+            if (pref != null) {
+                // Note: with empty-block requirement, this is typically "solid" anyway
+                boolean inWater = !level.getFluidState(scratch).isEmpty();
+                prefScore += inWater ? pref.preferWaterSurfaceWeight() : pref.preferSolidSurfaceWeight();
+
+                if (!inWater) {
+                    scratch.set(x, groundY, z);
+                    var belowState = level.getBlockState(scratch);
+                    if (belowState.is(CMBlockTags.SOFT_GROUND)) prefScore += pref.preferSoftGroundWeight();
+                    if (belowState.is(CMBlockTags.HARD_GROUND)) prefScore += pref.preferHardGroundWeight();
                 }
             }
 
-            // Find a solid ground block at/under this position.
-            BlockPos ground = findGround(level, pos);
-            if (ground == null) {
-                continue;
+            double d2 = mob.distanceToSqr(x + 0.5D, standY, z + 0.5D);
+            double score = (prefScore * 10.0D) - (d2 * 0.01D);
+
+            if (score > bestScore) {
+                bestScore = score;
+                bestX = x;
+                bestY = standY;
+                bestZ = z;
+                bestDist = dist;
             }
-
-            // We need air above ground to stand in.
-            if (!level.isEmptyBlock(ground.above())) {
-                continue;
-            }
-
-            // Decide walk vs run based on how far away this target is.
-            decideRunOrWalk(dist);
-
-            return Vec3.atBottomCenterOf(ground.above());
         }
 
-        // No valid position found this attempt.
-        return null;
+        if (bestScore == -Double.MAX_VALUE) return false;
+
+        decideRunOrWalk(bestDist);
+
+        this.wantedX = bestX + 0.5D;
+        this.wantedY = bestY;
+        this.wantedZ = bestZ + 0.5D;
+
+        return true;
     }
 
-    /**
-     * Decide whether this wander should run or walk.
-     *
-     * Rules:
-     * - If runSpeed is invalid (<= 0), we can never run.
-     * - If runDistanceThreshold is enabled and distance >= threshold => force run.
-     * - Otherwise, roll runChance to decide.
-     */
     private void decideRunOrWalk(double distance) {
         boolean canRun = (runSpeed > 0.0D);
         if (!canRun) {
@@ -305,39 +240,38 @@ public class CatoWanderGoal extends Goal {
             return;
         }
 
-        // Force-run when the chosen destination is far enough (optional feature).
         boolean forceRun = (runDistanceThreshold > 0.0D && distance >= runDistanceThreshold);
 
         if (forceRun) {
             this.running = true;
         } else if (runChance > 0.0F && mob.getRandom().nextFloat() < this.runChance) {
-            // Probabilistic run (e.g. 10% of wanders are runs)
             this.running = true;
         } else {
             this.running = false;
         }
     }
 
-    /** Find the first solid block at or below start (robust for superflat + normal worlds). */
-    private BlockPos findGround(Level level, BlockPos start) {
-        BlockPos pos = start;
+    private int findGroundY(Level level, int x, int startY, int z) {
+        int y = Mth.clamp(startY, level.getMinBuildHeight(), level.getMaxBuildHeight() - 1);
 
-        // If we start inside terrain (rare), climb up until we're in air.
-        while (pos.getY() < level.getMaxBuildHeight() && !level.isEmptyBlock(pos)) {
-            pos = pos.above();
+        scratch.set(x, y, z);
+        while (y < level.getMaxBuildHeight() - 1 && !level.isEmptyBlock(scratch)) {
+            y++;
+            scratch.setY(y);
         }
 
-        // Now drop down until we hit a solid block, or we hit world bottom.
-        while (pos.getY() > level.getMinBuildHeight() && level.isEmptyBlock(pos)) {
-            pos = pos.below();
+        while (y > level.getMinBuildHeight() && level.isEmptyBlock(scratch)) {
+            y--;
+            scratch.setY(y);
         }
 
-        // If we reached bottom and it's still empty, we failed.
-        if (level.isEmptyBlock(pos)) {
-            return null;
-        }
+        if (level.isEmptyBlock(scratch)) return Integer.MIN_VALUE;
+        return y;
+    }
 
-        // 'pos' is solid ground block (stand position would be pos.above()).
-        return pos;
+    private static float clamp01(float v) {
+        if (v < 0f) return 0f;
+        if (v > 1f) return 1f;
+        return v;
     }
 }

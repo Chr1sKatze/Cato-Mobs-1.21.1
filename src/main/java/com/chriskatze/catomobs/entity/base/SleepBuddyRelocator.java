@@ -2,6 +2,7 @@ package com.chriskatze.catomobs.entity.base;
 
 import com.chriskatze.catomobs.entity.CatoMobSpeciesInfo;
 import net.minecraft.core.BlockPos;
+import net.minecraft.util.Mth;
 import net.minecraft.world.level.Level;
 import org.jetbrains.annotations.Nullable;
 
@@ -14,7 +15,7 @@ public final class SleepBuddyRelocator {
         if (fromPos == null) return null;
         if (!info.sleepPreferSleepingBuddies()) return null;
 
-        Level level = mob.level();
+        final Level level = mob.level();
 
         int searchR = (int) Math.ceil(Math.max(0.0D, info.sleepBuddySearchRadius()));
         if (searchR <= 0) return null;
@@ -49,42 +50,84 @@ public final class SleepBuddyRelocator {
         int rr = Math.max(1, info.sleepBuddyRelocateRadiusBlocks());
         BlockPos buddyBase = nearest.blockPosition();
 
-        BlockPos bestPos = null;
-        double bestDistSqr = Double.MAX_VALUE;
-
         int minHeadroom = Math.max(1, info.sleepSearchMinHeadroomBlocks());
+        int roofMax = Math.max(1, info.sleepSearchCeilingScanMaxBlocks());
 
         // IMPORTANT: buddy relocation should NOT consume the global path budget
         SleepSpotFinder.PathBudget pathBudget = null;
 
-        // Small preference: try closer offsets first (spiral-ish via dist check)
+        // Reuse mutables to reduce allocations
+        final BlockPos.MutableBlockPos scratch = new BlockPos.MutableBlockPos();       // ground finder + validator scratch
+        final BlockPos.MutableBlockPos standScratch = new BlockPos.MutableBlockPos();  // candidate stand pos
+
+        int bestX = 0, bestY = 0, bestZ = 0;
+        double bestDistSqr = Double.MAX_VALUE;
+        boolean found = false;
+
         for (int dx = -rr; dx <= rr; dx++) {
             for (int dz = -rr; dz <= rr; dz++) {
                 if (dx == 0 && dz == 0) continue;
 
-                // Prefer near-adjacent positions (skip far corners if you like)
-                // if (Math.abs(dx) + Math.abs(dz) > rr) continue; // optional manhattan cutoff
+                int x = buddyBase.getX() + dx;
+                int z = buddyBase.getZ() + dz;
 
-                BlockPos candidate = buddyBase.offset(dx, 0, dz);
+                int startY = buddyBase.getY() + 8;
 
-                // Snap to ground (same as normal search)
-                BlockPos ground = SleepSpotFinder.findGround(level, candidate.above(8));
-                if (ground == null) continue;
+                int groundY = findGroundY(level, scratch, x, startY, z);
+                if (groundY == Integer.MIN_VALUE) continue;
 
-                BlockPos standPos = ground.above();
+                int standY = groundY + 1;
 
-                // Validate under the same rules as regular sleep spots
-                if (!SleepSpotFinder.isStandPosValidForSleep(mob, info, standPos, minHeadroom, pathBudget)) continue;
+                standScratch.set(x, standY, z);
 
-                // Prefer closest valid position to buddy (snuggly)
-                double d2 = standPos.distSqr(buddyBase);
+                // Cheap pre-filter
+                if (mob.isSleepSpotBlacklisted(standScratch)) continue;
+
+                int roofDy = mob.roofDistance(standScratch, roofMax);
+                if (roofDy == -1 || roofDy < minHeadroom) continue;
+
+                // ✅ FULL validation, but now allocation-free (no immutable(), no internal new scratch)
+                if (!SleepSpotFinder.isStandPosValidForSleepMutable(
+                        mob, info, standScratch, minHeadroom, pathBudget, scratch
+                )) {
+                    continue;
+                }
+
+                double d2 = buddyBase.distToCenterSqr(x + 0.5D, standY, z + 0.5D);
                 if (d2 < bestDistSqr) {
                     bestDistSqr = d2;
-                    bestPos = standPos;
+                    bestX = x;
+                    bestY = standY;
+                    bestZ = z;
+                    found = true;
                 }
             }
         }
 
-        return bestPos;
+        return found ? new BlockPos(bestX, bestY, bestZ) : null;
+    }
+
+    /**
+     * Allocation-light ground finder (returns Y or MIN_VALUE).
+     * - move up until empty
+     * - move down until non-empty
+     */
+    private static int findGroundY(Level level, BlockPos.MutableBlockPos scratch, int x, int startY, int z) {
+        int y = Mth.clamp(startY, level.getMinBuildHeight(), level.getMaxBuildHeight() - 1);
+
+        scratch.set(x, y, z);
+
+        while (y < level.getMaxBuildHeight() - 1 && !level.isEmptyBlock(scratch)) {
+            y++;
+            scratch.setY(y);
+        }
+
+        while (y > level.getMinBuildHeight() && level.isEmptyBlock(scratch)) {
+            y--;
+            scratch.setY(y);
+        }
+
+        if (level.isEmptyBlock(scratch)) return Integer.MIN_VALUE;
+        return y;
     }
 }

@@ -73,14 +73,20 @@ public class CatoGoalPriorityProfile {
     /** Child-follow-parent behavior (baby mobs). */
     public int followParent = 8;
 
+    /** Rain shelter behavior (seek roof while raining). */
+    public int rainShelter = 9;
+
+    /** Optional "fun swim" behavior (go swim briefly, then exit). */
+    public int funSwim = 10;
+
     /** Default idle movement should be low priority. */
-    public int wander = 9;
+    public int wander = 11;
 
     /** Cosmetic random head movement (idle scanning). */
-    public int randomLook = 10;
+    public int randomLook = 12;
 
     /** Cosmetic look-at-player. */
-    public int lookAtPlayer = 11;
+    public int lookAtPlayer = 13;
 
     // ------------------------------------------------------------
     // targetSelector priorities (target acquisition / hostility)
@@ -114,16 +120,18 @@ public class CatoGoalPriorityProfile {
 
         // Copy goalSelector priorities
         p.floatGoal = this.floatGoal;
+        p.flee = this.flee;
         p.sleepLock = this.sleepLock;
         p.sleepSearch = this.sleepSearch;
-        p.flee = this.flee;
         p.meleeAttack = this.meleeAttack;
         p.tempt = this.tempt;
         p.breed = this.breed;
         p.followParent = this.followParent;
+        p.rainShelter = this.rainShelter;
+        p.funSwim = this.funSwim;
         p.wander = this.wander;
-        p.lookAtPlayer = this.lookAtPlayer;
         p.randomLook = this.randomLook;
+        p.lookAtPlayer = this.lookAtPlayer;
 
         // Copy targetSelector priorities
         p.targetHurtBy = this.targetHurtBy;

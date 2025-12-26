@@ -9,10 +9,18 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
+/**
+ * SleepSpotFinder
+ *
+ * Performance-focused version for "many mobs":
+ * - Avoids repeated entity AABB scans per candidate (combined buddy counting, run late)
+ * - Avoids repeated roofDistance scans per candidate (compute once)
+ * - Avoids boxing HashSet<Long> (custom primitive long sets)
+ * - Two-stage selection: cheap filtering -> expensive finalize (path + buddy scan) only for TOP_K candidates
+ * - Uses MutableBlockPos scratch where possible to reduce allocations
+ */
 public final class SleepSpotFinder {
 
     private SleepSpotFinder() {}
@@ -26,187 +34,322 @@ public final class SleepSpotFinder {
         void consumeOne() { used++; }
     }
 
+    // ------------------------------------------------------------
+    // Primitive long set (open addressing) to avoid HashSet<Long> boxing.
+    // ------------------------------------------------------------
+    private static final class LongOpenHashSet {
+        private long[] keys;
+        private boolean[] used;
+        private int size;
+        private int mask;
+        private int resizeAt;
+
+        LongOpenHashSet(int expectedSize) {
+            int cap = 1;
+            int need = Math.max(8, expectedSize);
+            while (cap < need * 2) cap <<= 1;
+            keys = new long[cap];
+            used = new boolean[cap];
+            mask = cap - 1;
+            resizeAt = (int) (cap * 0.7f);
+        }
+
+        boolean add(long k) {
+            if (size >= resizeAt) rehash(keys.length << 1);
+
+            int i = mix64to32(k) & mask;
+            while (used[i]) {
+                if (keys[i] == k) return false;
+                i = (i + 1) & mask;
+            }
+            used[i] = true;
+            keys[i] = k;
+            size++;
+            return true;
+        }
+
+        boolean contains(long k) {
+            int i = mix64to32(k) & mask;
+            while (used[i]) {
+                if (keys[i] == k) return true;
+                i = (i + 1) & mask;
+            }
+            return false;
+        }
+
+        private void rehash(int newCap) {
+            long[] oldK = keys;
+            boolean[] oldU = used;
+
+            keys = new long[newCap];
+            used = new boolean[newCap];
+            mask = newCap - 1;
+            resizeAt = (int) (newCap * 0.7f);
+            size = 0;
+
+            for (int i = 0; i < oldK.length; i++) {
+                if (!oldU[i]) continue;
+                add(oldK[i]);
+            }
+        }
+
+        // decent mixing for blockpos.asLong keys
+        private static int mix64to32(long z) {
+            z ^= (z >>> 33);
+            z *= 0xff51afd7ed558ccdL;
+            z ^= (z >>> 33);
+            z *= 0xc4ceb9fe1a85ec53L;
+            z ^= (z >>> 33);
+            return (int) z;
+        }
+    }
+
+    // ------------------------------------------------------------
+    // Candidate buffer (top K by cheap score)
+    // ------------------------------------------------------------
+    private static final class Candidate {
+        int x, y, z;          // stand pos
+        int roofDy;           // cached roof distance
+        int baseScore;        // roof/headroom + strike + memory bias (NO buddy effects)
+        double distSqr;       // to mob
+        boolean memory;       // remembered spot
+    }
+
+    private static final class BuddyCounts {
+        int sleeping;
+        int awake;
+    }
+
     @Nullable
     public static BlockPos findRoofedSleepSpot(CatoBaseMob mob, CatoMobSpeciesInfo info) {
-        Level level = mob.level();
+        final Level level = mob.level();
 
-        // Search around where the mob actually is right now.
-        BlockPos center = mob.blockPosition();
+        final int centerX = mob.getBlockX();
+        final int centerY = mob.getBlockY();
+        final int centerZ = mob.getBlockZ();
 
-        double mul = Math.max(0.1D, info.sleepSearchRadiusMultiplier());
-        double maxRadius = Math.max(info.wanderMaxRadius(), 4.0D) * mul;
-        double minRadius = Math.max(0.0D, Math.min(info.wanderMinRadius() * mul, maxRadius));
+        final double mul = Math.max(0.1D, info.sleepSearchRadiusMultiplier());
+        final double maxRadius = Math.max(info.wanderMaxRadius(), 4.0D) * mul;
+        final double minRadius = Math.max(0.0D, Math.min(info.wanderMinRadius() * mul, maxRadius));
 
-        // Home radius enforcement is based on the real home center (if any)
-        BlockPos home = mob.getHomePos();
-        boolean enforceHome = info.sleepSearchRespectHomeRadius()
+        final BlockPos home = mob.getHomePos();
+        final boolean enforceHome = info.sleepSearchRespectHomeRadius()
                 && mob.shouldStayWithinHomeRadius()
                 && home != null;
 
-        double homeRadiusSqr = enforceHome
-                ? mob.getHomeRadius() * mob.getHomeRadius()
+        final double homeRadiusSqr = enforceHome
+                ? (mob.getHomeRadius() * mob.getHomeRadius())
                 : 0.0D;
 
-        int maxAttempts = Math.max(1, info.sleepSearchMaxAttempts());
-        PathBudget pathBudget = new PathBudget(info.sleepSearchMaxPathAttempts());
+        final int maxAttempts = Math.max(1, info.sleepSearchMaxAttempts());
+        final PathBudget pathBudget = new PathBudget(info.sleepSearchMaxPathAttempts());
 
         final int minHeadroom = Math.max(1, info.sleepSearchMinHeadroomBlocks());
+        final int roofMax = Math.max(1, info.sleepSearchCeilingScanMaxBlocks());
+        final int buddyBonusPer = Math.max(0, info.sleepBuddyScoreBonusPerBuddy());
 
-        // ============================================================
-        // BEST-CANDIDATE TRACKING (single scoring system for all passes)
-        // ============================================================
-        BlockPos bestPos = null;
-        int bestScore = Integer.MAX_VALUE;
-        double bestDistSqr = Double.MAX_VALUE;
+        final BlockPos.MutableBlockPos scratch = new BlockPos.MutableBlockPos();
 
-        // Track tested pos so later passes don't redo earlier candidates
-        Set<Long> testedPos = new HashSet<>();
-        Set<Long> failedPathPos = new HashSet<>();
-
-        // ============================================================
-        // PASS -1) "LATE SLEEPERS JOIN EXISTING SLEEPERS" (STRONG)
-        // ============================================================
+        // ------------------------------------------------------------
+        // PASS -1) "Late sleepers join existing sleepers" (strong + early return)
+        // ------------------------------------------------------------
         if (info.sleepPreferSleepingBuddies()
                 && info.sleepBuddyTypes() != null
                 && !info.sleepBuddyTypes().isEmpty()) {
 
-            BlockPos join = findBestAdjacentToSleepingBuddy(
-                    mob, info, level, center, minHeadroom, pathBudget, enforceHome, home, homeRadiusSqr
+            BlockPos join = findBestAdjacentToSleepingBuddyFast(
+                    mob, info, level,
+                    centerX, centerY, centerZ,
+                    minHeadroom, roofMax, pathBudget,
+                    enforceHome, home, homeRadiusSqr, scratch
             );
 
-            if (join != null) {
-                // ✅ NEW: blacklist guard
-                if (!mob.isSleepSpotBlacklisted(join)) {
-                    long k = join.asLong();
-                    testedPos.add(k);
-
-                    int s = scoreSpot(mob, info, level, join, minHeadroom);
-                    double d = distSqrToMob(mob, join);
-
-                    bestPos = join;
-                    bestScore = s;
-                    bestDistSqr = d;
-                }
+            if (join != null && !mob.isSleepSpotBlacklisted(join)) {
+                return join;
             }
         }
 
-        // ============================================================
-        // PASS 0) Remembered spots (STRICT, includes path check)
-        // ============================================================
+        final LongOpenHashSet testedPos = new LongOpenHashSet(Math.max(32, maxAttempts * 2));
+        final LongOpenHashSet failedPathPos = new LongOpenHashSet(Math.max(32, maxAttempts));
+
+        final int TOP_K = 8;
+        final Candidate[] top = new Candidate[TOP_K];
+        for (int i = 0; i < TOP_K; i++) top[i] = new Candidate();
+        int topCount = 0;
+
+        // ------------------------------------------------------------
+        // PASS 0) Remembered spots (cheap validate -> add to top-K)
+        // ------------------------------------------------------------
         if (isCurrentlySleepTime(mob, info)) {
-            for (CatoBaseMob.SleepSpotMemory mem : mob.getRememberedSleepSpots()) {
-                BlockPos standPos = mem.pos;
-                if (standPos == null) continue;
+            List<CatoBaseMob.SleepSpotMemory> mem = mob.getRememberedSleepSpots();
+            if (mem != null && !mem.isEmpty()) {
+                for (CatoBaseMob.SleepSpotMemory m : mem) {
+                    if (m == null || m.pos == null) continue;
 
-                // ✅ NEW: blacklist guard
-                if (mob.isSleepSpotBlacklisted(standPos)) {
-                    continue;
-                }
+                    BlockPos standPos = m.pos;
+                    if (mob.isSleepSpotBlacklisted(standPos)) continue;
 
-                if (pathBudget.exhausted()) break;
+                    long key = standPos.asLong();
+                    testedPos.add(key);
 
-                long key = standPos.asLong();
-                testedPos.add(key);
+                    int sx = standPos.getX();
+                    int sy = standPos.getY();
+                    int sz = standPos.getZ();
 
-                if (!isStandPosValidForSleep(mob, info, standPos, minHeadroom, pathBudget)) {
-                    mob.strikeSleepSpot(standPos);
-                    failedPathPos.add(key);
-                    continue;
-                }
+                    if (!isWithinHomeIfNeeded(mob, enforceHome, home, homeRadiusSqr, sx, sy, sz)) continue;
+                    if (!hasRequiredGroundFast(level, scratch, sx, sy, sz, info)) continue;
+                    if (!hasHeadroomFast(level, scratch, sx, sy, sz, minHeadroom)) continue;
 
-                int score = scoreSpot(mob, info, level, standPos, minHeadroom);
+                    int roofDy = mob.roofDistance(standPos, roofMax);
+                    if (roofDy == -1 || roofDy < minHeadroom) continue;
 
-                // Memory bias: slightly attractive, but not enough to beat buddies.
-                score -= 2;
+                    Candidate cand = new Candidate();
+                    cand.x = sx; cand.y = sy; cand.z = sz;
+                    cand.roofDy = roofDy;
 
-                // Strike penalty: remembered-but-problematic spots should stop winning
-                score += strikePenalty(mob, info, standPos);
+                    int base = Math.max(0, roofDy - minHeadroom);
+                    base -= 2; // memory bias
+                    base += strikePenalty(mob, info, standPos);
 
-                double distSqrToMob = distSqrToMob(mob, standPos);
+                    cand.baseScore = base;
+                    cand.distSqr = distSqrToMob(mob, sx, sy, sz);
+                    cand.memory = true;
 
-                if (score < bestScore || (score == bestScore && distSqrToMob < bestDistSqr)) {
-                    bestScore = score;
-                    bestDistSqr = distSqrToMob;
-                    bestPos = standPos;
+                    topCount = insertTop(top, topCount, TOP_K, cand);
                 }
             }
         }
 
-        // ============================================================
-        // PASS 1) Random candidate search (STRICT scoring, includes path check)
-        // ============================================================
-        for (int attempt = 0; attempt < maxAttempts; attempt++) {
-            if (pathBudget.exhausted()) break;
+        // ------------------------------------------------------------
+        // PASS 1) Random candidates (Stage A: cheap filter only)
+        // ------------------------------------------------------------
+        final int baseY = centerY;
 
+        for (int attempt = 0; attempt < maxAttempts; attempt++) {
             double angle = mob.getRandom().nextDouble() * (Math.PI * 2.0D);
             double dist = minRadius + mob.getRandom().nextDouble() * (maxRadius - minRadius);
 
             if (dist < info.sleepSearchMinDistance()) continue;
 
-            int x = center.getX() + Mth.floor(Math.cos(angle) * dist);
-            int z = center.getZ() + Mth.floor(Math.sin(angle) * dist);
-            int y = mob.blockPosition().getY() + 8;
+            int x = centerX + Mth.floor(Math.cos(angle) * dist);
+            int z = centerZ + Mth.floor(Math.sin(angle) * dist);
+            int startY = baseY + 8;
 
-            // Home radius respect (optional) — compare to HOME, not to center
             if (enforceHome) {
                 int dxHome = x - home.getX();
                 int dzHome = z - home.getZ();
                 if ((double) (dxHome * dxHome + dzHome * dzHome) > homeRadiusSqr) continue;
             }
 
-            BlockPos probe = new BlockPos(x, y, z);
+            int groundY = findGroundY(level, scratch, x, startY, z);
+            if (groundY == Integer.MIN_VALUE) continue;
 
-            BlockPos ground = findGround(level, probe);
-            if (ground == null) continue;
+            int standY = groundY + 1;
 
-            BlockPos standPos = ground.above();
-            long key = standPos.asLong();
-
+            long key = BlockPos.asLong(x, standY, z);
             if (!testedPos.add(key)) continue;
             if (failedPathPos.contains(key)) continue;
 
-            // ✅ NEW: blacklist guard (early, before pathing)
-            if (mob.isSleepSpotBlacklisted(standPos)) {
+            scratch.set(x, standY, z);
+            if (mob.isSleepSpotBlacklisted(scratch)) {
                 failedPathPos.add(key);
                 continue;
             }
 
-            boolean ok = isStandPosValidForSleep(mob, info, standPos, minHeadroom, pathBudget);
-            if (!ok) {
-                failedPathPos.add(key);
-                continue;
+            if (!hasRequiredGroundFast(level, scratch, x, standY, z, info)) continue;
+            if (!hasHeadroomFast(level, scratch, x, standY, z, minHeadroom)) continue;
+
+            int roofDy = mob.roofDistance(scratch, roofMax);
+            if (roofDy == -1 || roofDy < minHeadroom) continue;
+
+            Candidate cand = new Candidate();
+            cand.x = x; cand.y = standY; cand.z = z;
+            cand.roofDy = roofDy;
+
+            int baseScore = Math.max(0, roofDy - minHeadroom);
+            baseScore += strikePenalty(mob, info, scratch);
+            cand.baseScore = baseScore;
+            cand.distSqr = distSqrToMob(mob, x, standY, z);
+            cand.memory = false;
+
+            topCount = insertTop(top, topCount, TOP_K, cand);
+        }
+
+        // ------------------------------------------------------------
+        // Stage B finalize: path + buddy scan ONLY for top-K
+        // ------------------------------------------------------------
+        if (topCount > 0) {
+            int bestFinalScore = Integer.MAX_VALUE;
+            double bestFinalDist = Double.MAX_VALUE;
+            Candidate best = null;
+
+            BuddyCounts counts = new BuddyCounts();
+
+            // ✅ Reused target pos to avoid new BlockPos(...) allocations in finalize
+            final BlockPos.MutableBlockPos pathTarget = new BlockPos.MutableBlockPos();
+
+            for (int i = 0; i < topCount; i++) {
+                if (pathBudget.exhausted()) break;
+
+                Candidate c = top[i];
+
+                if (isSleepingMobAlreadyHereFast(mob, level, c.x, c.y, c.z)) continue;
+                if (!isWithinHomeIfNeeded(mob, enforceHome, home, homeRadiusSqr, c.x, c.y, c.z)) continue;
+
+                scratch.set(c.x, c.y, c.z);
+                if (mob.isSleepSpotBlacklisted(scratch)) continue;
+
+                pathBudget.consumeOne();
+
+                pathTarget.set(c.x, c.y, c.z);
+                var path = mob.getNavigation().createPath(pathTarget, 0);
+
+                if (path == null || !path.canReach()) {
+                    failedPathPos.add(BlockPos.asLong(c.x, c.y, c.z));
+                    continue;
+                }
+
+                int finalScore = c.baseScore;
+
+                if (info.sleepPreferSleepingBuddies()
+                        && info.sleepBuddyTypes() != null
+                        && !info.sleepBuddyTypes().isEmpty()
+                        && info.sleepBuddySearchRadius() > 0.0D
+                        && info.sleepBuddyMaxCount() > 0) {
+
+                    countBuddiesNearCombined(mob, info, level, c.x, c.y, c.z, counts);
+
+                    finalScore -= counts.sleeping * buddyBonusPer;
+
+                    int awakeBonus = Math.max(1, buddyBonusPer / 3);
+                    finalScore -= counts.awake * awakeBonus;
+                }
+
+                if (finalScore < bestFinalScore || (finalScore == bestFinalScore && c.distSqr < bestFinalDist)) {
+                    bestFinalScore = finalScore;
+                    bestFinalDist = c.distSqr;
+                    best = c;
+                }
             }
 
-            int score = scoreSpot(mob, info, level, standPos, minHeadroom);
-
-            // Strike penalty (only affects remembered matches; still helpful)
-            score += strikePenalty(mob, info, standPos);
-
-            double distSqrToMob = distSqrToMob(mob, standPos);
-
-            if (score < bestScore || (score == bestScore && distSqrToMob < bestDistSqr)) {
-                bestScore = score;
-                bestDistSqr = distSqrToMob;
-                bestPos = standPos;
+            if (best != null) {
+                return new BlockPos(best.x, best.y, best.z);
             }
         }
 
-        // ============================================================
-        // PASS 2) FALLBACK PASS (NO PATH PRE-CHECK)
-        // Only used if STRICT found nothing at all.
-        // ============================================================
-        if (bestPos == null && maxAttempts > 0) {
-            int roofMax = Math.max(1, info.sleepSearchCeilingScanMaxBlocks());
-
+        // ------------------------------------------------------------
+        // PASS 2) Fallback (NO PATH pre-check)
+        // ------------------------------------------------------------
+        if (maxAttempts > 0) {
             for (int attempt = 0; attempt < maxAttempts; attempt++) {
                 double angle = mob.getRandom().nextDouble() * (Math.PI * 2.0D);
                 double dist = minRadius + mob.getRandom().nextDouble() * (maxRadius - minRadius);
 
                 if (dist < info.sleepSearchMinDistance()) continue;
 
-                int x = center.getX() + Mth.floor(Math.cos(angle) * dist);
-                int z = center.getZ() + Mth.floor(Math.sin(angle) * dist);
-                int y = mob.blockPosition().getY() + 8;
+                int x = centerX + Mth.floor(Math.cos(angle) * dist);
+                int z = centerZ + Mth.floor(Math.sin(angle) * dist);
+                int startY = baseY + 8;
 
                 if (enforceHome) {
                     int dxHome = x - home.getX();
@@ -214,62 +357,418 @@ public final class SleepSpotFinder {
                     if ((double) (dxHome * dxHome + dzHome * dzHome) > homeRadiusSqr) continue;
                 }
 
-                BlockPos probe = new BlockPos(x, y, z);
+                int groundY = findGroundY(level, scratch, x, startY, z);
+                if (groundY == Integer.MIN_VALUE) continue;
 
-                BlockPos ground = findGround(level, probe);
-                if (ground == null) continue;
+                int standY = groundY + 1;
+                scratch.set(x, standY, z);
 
-                BlockPos standPos = ground.above();
+                if (mob.isSleepSpotBlacklisted(scratch)) continue;
+                if (!hasRequiredGroundFast(level, scratch, x, standY, z, info)) continue;
+                if (!hasHeadroomFast(level, scratch, x, standY, z, minHeadroom)) continue;
 
-                // ✅ NEW: blacklist guard (fallback too)
-                if (mob.isSleepSpotBlacklisted(standPos)) continue;
+                int roofDy = mob.roofDistance(scratch, roofMax);
+                if (roofDy == -1 || roofDy < minHeadroom) continue;
 
-                if (!isStandPosValidForSleepNoPath(mob, info, standPos, minHeadroom)) continue;
-
-                // Must be roofed
-                if (mob.roofDistance(standPos, roofMax) == -1) continue;
-
-                return standPos;
+                return new BlockPos(x, standY, z);
             }
         }
 
-        return bestPos;
+        return null;
     }
 
     // ================================================================
-    // Scoring helpers
+    // Buddy-join pass (fast)
     // ================================================================
 
-    private static int scoreSpot(CatoBaseMob mob, CatoMobSpeciesInfo info, Level level, BlockPos standPos, int minHeadroom) {
-        // Base score: prefer low roof distance (cozy ceiling)
+    @Nullable
+    private static BlockPos findBestAdjacentToSleepingBuddyFast(
+            CatoBaseMob mob,
+            CatoMobSpeciesInfo info,
+            Level level,
+            int centerX, int centerY, int centerZ,
+            int minHeadroom,
+            int roofMax,
+            PathBudget pathBudget,
+            boolean enforceHome,
+            @Nullable BlockPos home,
+            double homeRadiusSqr,
+            BlockPos.MutableBlockPos scratch
+    )
+ {
+        double r = Math.max(0.0D, info.sleepBuddySearchRadius());
+        if (r <= 0.0D) return null;
+
+        int rr = Math.max(1, info.sleepBuddyRelocateRadiusBlocks());
+
+     var box = new net.minecraft.world.phys.AABB(
+             centerX - r, centerY - 4, centerZ - r,
+             centerX + 1 + r, centerY + 4, centerZ + 1 + r
+     );
+
+        var buddies = level.getEntitiesOfClass(
+                CatoBaseMob.class,
+                box,
+                e -> e != mob
+                        && e.isAlive()
+                        && e.isSleeping()
+                        && info.sleepBuddyTypes().contains(e.getType())
+        );
+
+        if (buddies.isEmpty()) return null;
+
+        int bestX = 0, bestY = 0, bestZ = 0;
+        boolean found = false;
+
+        int bestScore = Integer.MAX_VALUE;
+        double bestDistSqr = Double.MAX_VALUE;
+
+        final int buddyBonusPer = Math.max(0, info.sleepBuddyScoreBonusPerBuddy());
+
+        // Reused target for pathing (no new BlockPos per candidate)
+        final BlockPos.MutableBlockPos pathTarget = new BlockPos.MutableBlockPos();
+
+        for (CatoBaseMob buddy : buddies) {
+            if (pathBudget.exhausted()) break;
+
+            // ✅ no BlockPos allocation
+            final int buddyX = buddy.getBlockX();
+            final int buddyY = buddy.getBlockY();
+            final int buddyZ = buddy.getBlockZ();
+
+            for (int dx = -rr; dx <= rr; dx++) {
+                for (int dz = -rr; dz <= rr; dz++) {
+                    if (dx == 0 && dz == 0) continue;
+
+                    int x = buddyX + dx;
+                    int z = buddyZ + dz;
+                    int startY = buddyY + 8;
+
+                    int groundY = findGroundY(level, scratch, x, startY, z);
+                    if (groundY == Integer.MIN_VALUE) continue;
+
+                    int standY = groundY + 1;
+
+                    scratch.set(x, standY, z);
+                    if (mob.isSleepSpotBlacklisted(scratch)) continue;
+
+                    if (enforceHome && home != null) {
+                        double hx = (home.getX() + 0.5D);
+                        double hz = (home.getZ() + 0.5D);
+                        double ddhx = (x + 0.5D) - hx;
+                        double ddhz = (z + 0.5D) - hz;
+                        if ((ddhx * ddhx + ddhz * ddhz) > homeRadiusSqr) continue;
+                    }
+
+                    if (!hasRequiredGroundFast(level, scratch, x, standY, z, info)) continue;
+                    if (!hasHeadroomFast(level, scratch, x, standY, z, minHeadroom)) continue;
+
+                    int roofDy = mob.roofDistance(scratch, roofMax);
+                    if (roofDy == -1 || roofDy < minHeadroom) continue;
+
+                    if (isSleepingMobAlreadyHereFast(mob, level, x, standY, z)) continue;
+
+                    if (pathBudget.exhausted()) break;
+                    pathBudget.consumeOne();
+
+                    pathTarget.set(x, standY, z);
+                    var path = mob.getNavigation().createPath(pathTarget, 0);
+                    if (path == null || !path.canReach()) continue;
+
+                    int score = Math.max(0, roofDy - minHeadroom);
+                    score += strikePenalty(mob, info, scratch);
+
+                    // ✅ no BlockPos-based dist calc
+                    double ddx = (buddyX + 0.5D) - (x + 0.5D);
+                    double ddy = (buddyY + 0.5D) - (standY + 0.5D);
+                    double ddz = (buddyZ + 0.5D) - (z + 0.5D);
+                    double distToBuddy = ddx * ddx + ddy * ddy + ddz * ddz;
+
+                    if (distToBuddy <= (2.5D * 2.5D)) score -= Math.max(4, buddyBonusPer * 2);
+                    else if (distToBuddy <= (10.0D * 10.0D)) score -= Math.max(2, buddyBonusPer);
+
+                    double distToMob = mob.distanceToSqr(x + 0.5D, standY, z + 0.5D);
+
+                    if (score < bestScore || (score == bestScore && distToMob < bestDistSqr)) {
+                        bestScore = score;
+                        bestDistSqr = distToMob;
+                        bestX = x;
+                        bestY = standY;
+                        bestZ = z;
+                        found = true;
+                    }
+                }
+            }
+        }
+
+        return found ? new BlockPos(bestX, bestY, bestZ) : null;
+    }
+
+
+    // ================================================================
+    // Package-private helpers (still available for buddy-relocator)
+    // ================================================================
+
+    static boolean isStandPosValidForSleep(
+            CatoBaseMob mob,
+            CatoMobSpeciesInfo info,
+            BlockPos standPos,
+            int minHeadroom,
+            PathBudget pathBudget
+    ) {
+        if (standPos == null) return false;
+        if (mob.isSleepSpotBlacklisted(standPos)) return false;
+
+        Level level = mob.level();
+
+        if (isSleepingMobAlreadyHereFast(mob, level, standPos.getX(), standPos.getY(), standPos.getZ())) return false;
+
+        boolean enforceHome = info.sleepSearchRespectHomeRadius()
+                && mob.shouldStayWithinHomeRadius()
+                && mob.getHomePos() != null;
+
+        BlockPos home = mob.getHomePos();
+        double homeRadiusSqr = (home != null) ? (mob.getHomeRadius() * mob.getHomeRadius()) : 0.0D;
+
+        if (!isWithinHomeIfNeeded(mob, enforceHome, home, homeRadiusSqr, standPos.getX(), standPos.getY(), standPos.getZ())) return false;
+
+        BlockPos.MutableBlockPos scratch = new BlockPos.MutableBlockPos();
+        if (!hasRequiredGroundFast(level, scratch, standPos.getX(), standPos.getY(), standPos.getZ(), info)) return false;
+        if (!hasHeadroomFast(level, scratch, standPos.getX(), standPos.getY(), standPos.getZ(), minHeadroom)) return false;
+
         int roofMax = Math.max(1, info.sleepSearchCeilingScanMaxBlocks());
         int roofDy = mob.roofDistance(standPos, roofMax);
-        int score = Math.max(0, roofDy - minHeadroom);
+        if (roofDy == -1 || roofDy < minHeadroom) return false;
 
-        // Social sleeping bonus (sleeping buddies strong)
-        int sleepingBuddies = countSleepingBuddiesNear(mob, info, level, standPos);
-        score -= sleepingBuddies * Math.max(0, info.sleepBuddyScoreBonusPerBuddy());
+        if (pathBudget != null && pathBudget.exhausted()) return false;
+        if (pathBudget != null) pathBudget.consumeOne();
 
-        // Awake buddies weaker (helps converge before anyone sleeps)
-        int awakeBuddies = countAwakeBuddiesNear(mob, info, level, standPos);
-        int awakeBonus = Math.max(1, info.sleepBuddyScoreBonusPerBuddy() / 3);
-        score -= awakeBuddies * awakeBonus;
-
-        return score;
+        var path = mob.getNavigation().createPath(standPos, 0);
+        return path != null && path.canReach();
     }
 
-    private static double distSqrToMob(CatoBaseMob mob, BlockPos standPos) {
-        return mob.distanceToSqr(
-                standPos.getX() + 0.5D,
-                standPos.getY(),
-                standPos.getZ() + 0.5D
-        );
+    // ✅ NEW: allocation-free validator for callers that already have mutables
+    static boolean isStandPosValidForSleepMutable(
+            CatoBaseMob mob,
+            CatoMobSpeciesInfo info,
+            BlockPos.MutableBlockPos standPos,
+            int minHeadroom,
+            @Nullable PathBudget pathBudget,
+            BlockPos.MutableBlockPos scratch
+    ) {
+        if (standPos == null) return false;
+        if (mob.isSleepSpotBlacklisted(standPos)) return false;
+
+        final Level level = mob.level();
+
+        final int x = standPos.getX();
+        final int y = standPos.getY();
+        final int z = standPos.getZ();
+
+        if (isSleepingMobAlreadyHereFast(mob, level, x, y, z)) return false;
+
+        boolean enforceHome = info.sleepSearchRespectHomeRadius()
+                && mob.shouldStayWithinHomeRadius()
+                && mob.getHomePos() != null;
+
+        BlockPos home = mob.getHomePos();
+        double homeRadiusSqr = (home != null) ? (mob.getHomeRadius() * mob.getHomeRadius()) : 0.0D;
+
+        if (!isWithinHomeIfNeeded(mob, enforceHome, home, homeRadiusSqr, x, y, z)) return false;
+
+        if (!hasRequiredGroundFast(level, scratch, x, y, z, info)) return false;
+        if (!hasHeadroomFast(level, scratch, x, y, z, minHeadroom)) return false;
+
+        int roofMax = Math.max(1, info.sleepSearchCeilingScanMaxBlocks());
+        int roofDy = mob.roofDistance(standPos, roofMax);
+        if (roofDy == -1 || roofDy < minHeadroom) return false;
+
+        if (pathBudget != null && pathBudget.exhausted()) return false;
+        if (pathBudget != null) pathBudget.consumeOne();
+
+        var path = mob.getNavigation().createPath(standPos, 0);
+        return path != null && path.canReach();
+    }
+
+    static boolean isStandPosValidForSleepNoPath(
+            CatoBaseMob mob,
+            CatoMobSpeciesInfo info,
+            BlockPos standPos,
+            int minHeadroom
+    ) {
+        if (standPos == null) return false;
+        if (mob.isSleepSpotBlacklisted(standPos)) return false;
+
+        Level level = mob.level();
+
+        if (isSleepingMobAlreadyHereFast(mob, level, standPos.getX(), standPos.getY(), standPos.getZ())) return false;
+
+        boolean enforceHome = info.sleepSearchRespectHomeRadius()
+                && mob.shouldStayWithinHomeRadius()
+                && mob.getHomePos() != null;
+
+        BlockPos home = mob.getHomePos();
+        double homeRadiusSqr = (home != null) ? (mob.getHomeRadius() * mob.getHomeRadius()) : 0.0D;
+
+        if (!isWithinHomeIfNeeded(mob, enforceHome, home, homeRadiusSqr, standPos.getX(), standPos.getY(), standPos.getZ())) return false;
+
+        BlockPos.MutableBlockPos scratch = new BlockPos.MutableBlockPos();
+        if (!hasRequiredGroundFast(level, scratch, standPos.getX(), standPos.getY(), standPos.getZ(), info)) return false;
+        if (!hasHeadroomFast(level, scratch, standPos.getX(), standPos.getY(), standPos.getZ(), minHeadroom)) return false;
+
+        int roofMax = Math.max(1, info.sleepSearchCeilingScanMaxBlocks());
+        int roofDy = mob.roofDistance(standPos, roofMax);
+        return roofDy != -1 && roofDy >= minHeadroom;
+    }
+
+    // ------------------------------------------------------------
+    // Top-K insert (NO lambdas; Java-friendly)
+    // ------------------------------------------------------------
+    private static int insertTop(Candidate[] top, int topCount, int TOP_K, Candidate cand) {
+        if (topCount < TOP_K) {
+            topCount++;
+        } else {
+            Candidate worst = top[TOP_K - 1];
+            if (cand.baseScore > worst.baseScore) return topCount;
+            if (cand.baseScore == worst.baseScore && cand.distSqr >= worst.distSqr) return topCount;
+        }
+
+        int pos = 0;
+        while (pos < topCount - 1) {
+            Candidate cur = top[pos];
+            if (cand.baseScore < cur.baseScore) break;
+            if (cand.baseScore == cur.baseScore && cand.distSqr < cur.distSqr) break;
+            pos++;
+        }
+
+        for (int j = topCount - 1; j > pos; j--) {
+            Candidate dst = top[j];
+            Candidate src = top[j - 1];
+            dst.x = src.x; dst.y = src.y; dst.z = src.z;
+            dst.roofDy = src.roofDy;
+            dst.baseScore = src.baseScore;
+            dst.distSqr = src.distSqr;
+            dst.memory = src.memory;
+        }
+
+        Candidate slot = top[pos];
+        slot.x = cand.x; slot.y = cand.y; slot.z = cand.z;
+        slot.roofDy = cand.roofDy;
+        slot.baseScore = cand.baseScore;
+        slot.distSqr = cand.distSqr;
+        slot.memory = cand.memory;
+
+        return topCount;
+    }
+
+    // ================================================================
+    // Fast primitives
+    // ================================================================
+
+    private static boolean isWithinHomeIfNeeded(
+            CatoBaseMob mob,
+            boolean enforceHome,
+            @Nullable BlockPos home,
+            double homeRadiusSqr,
+            int x, int y, int z
+    ) {
+        if (!enforceHome || home == null) return true;
+        double dx = (x + 0.5D) - (home.getX() + 0.5D);
+        double dz = (z + 0.5D) - (home.getZ() + 0.5D);
+        return (dx * dx + dz * dz) <= homeRadiusSqr;
+    }
+
+    private static double distSqrToMob(CatoBaseMob mob, int x, int y, int z) {
+        return mob.distanceToSqr(x + 0.5D, y, z + 0.5D);
     }
 
     /**
-     * Penalize spots that exist in memory with strikes.
-     * This is the ONLY strike-data you currently have (until blacklist is added).
+     * Allocation-free ground finder (returns Y or MIN_VALUE).
+     * startY is clamped. Uses scratch.
      */
+    private static int findGroundY(Level level, BlockPos.MutableBlockPos scratch, int x, int startY, int z) {
+        int y = Mth.clamp(startY, level.getMinBuildHeight(), level.getMaxBuildHeight() - 1);
+
+        scratch.set(x, y, z);
+
+        while (y < level.getMaxBuildHeight() - 1 && !level.isEmptyBlock(scratch)) {
+            y++;
+            scratch.setY(y);
+        }
+
+        while (y > level.getMinBuildHeight() && level.isEmptyBlock(scratch)) {
+            y--;
+            scratch.setY(y);
+        }
+
+        if (level.isEmptyBlock(scratch)) return Integer.MIN_VALUE;
+        return y;
+    }
+
+    private static boolean hasHeadroomFast(Level level, BlockPos.MutableBlockPos scratch, int x, int standY, int z, int minHeadroom) {
+        for (int dy = 0; dy < minHeadroom; dy++) {
+            scratch.set(x, standY + dy, z);
+            if (!level.isEmptyBlock(scratch)) return false;
+        }
+        return true;
+    }
+
+    private static boolean hasRequiredGroundFast(Level level, BlockPos.MutableBlockPos scratch, int x, int standY, int z, CatoMobSpeciesInfo info) {
+        if (!info.sleepSearchRequireSolidGround()) return true;
+
+        scratch.set(x, standY - 1, z);
+        BlockState belowState = level.getBlockState(scratch);
+
+        if (belowState.is(BlockTags.LEAVES)) return false;
+
+        return belowState.isFaceSturdy(level, scratch, Direction.UP);
+    }
+
+    private static boolean isSleepingMobAlreadyHereFast(CatoBaseMob mob, Level level, int x, int y, int z) {
+        var box = new net.minecraft.world.phys.AABB(
+                x, y, z,
+                x + 1.0D, y + 1.5D, z + 1.0D
+        );
+
+        var list = level.getEntitiesOfClass(CatoBaseMob.class, box, e -> e != mob && e.isSleeping());
+        return !list.isEmpty();
+    }
+
+    private static void countBuddiesNearCombined(
+            CatoBaseMob mob,
+            CatoMobSpeciesInfo info,
+            Level level,
+            int x, int y, int z,
+            BuddyCounts out
+    ) {
+        out.sleeping = 0;
+        out.awake = 0;
+
+        double r = Math.max(0.0D, info.sleepBuddySearchRadius());
+        if (r <= 0.0D) return;
+
+        int max = Math.max(0, info.sleepBuddyMaxCount());
+        if (max <= 0) return;
+
+        var box = new net.minecraft.world.phys.AABB(
+                x - r, y - 2, z - r,
+                x + 1 + r, y + 2, z + 1 + r
+        );
+
+        for (CatoBaseMob other : level.getEntitiesOfClass(CatoBaseMob.class, box, e -> e != mob && e.isAlive())) {
+            if (info.sleepBuddyTypes() == null || !info.sleepBuddyTypes().contains(other.getType())) continue;
+
+            if (other.isSleeping()) out.sleeping++;
+            else out.awake++;
+
+            if (out.sleeping + out.awake >= max) break;
+        }
+    }
+
+    // ================================================================
+    // Scoring helpers (cheap / memory-based)
+    // ================================================================
+
     private static int strikePenalty(CatoBaseMob mob, CatoMobSpeciesInfo info, BlockPos pos) {
         int strikes = getMemoryStrikesFor(mob.getRememberedSleepSpots(), pos);
         if (strikes <= 0) return 0;
@@ -288,198 +787,14 @@ public final class SleepSpotFinder {
         return 0;
     }
 
-    // ================================================================
-    // Buddy-join pass
-    // ================================================================
-
-    @Nullable
-    private static BlockPos findBestAdjacentToSleepingBuddy(
-            CatoBaseMob mob,
-            CatoMobSpeciesInfo info,
-            Level level,
-            BlockPos center,
-            int minHeadroom,
-            PathBudget pathBudget,
-            boolean enforceHome,
-            @Nullable BlockPos home,
-            double homeRadiusSqr
-    ) {
-        double r = Math.max(0.0D, info.sleepBuddySearchRadius());
-        if (r <= 0.0D) return null;
-
-        int rr = Math.max(1, info.sleepBuddyRelocateRadiusBlocks());
-
-        // Find sleeping buddies near the mob
-        var box = new net.minecraft.world.phys.AABB(
-                center.getX() - r, center.getY() - 4, center.getZ() - r,
-                center.getX() + 1 + r, center.getY() + 4, center.getZ() + 1 + r
-        );
-
-        var buddies = level.getEntitiesOfClass(
-                CatoBaseMob.class,
-                box,
-                e -> e != mob
-                        && e.isAlive()
-                        && e.isSleeping()
-                        && info.sleepBuddyTypes().contains(e.getType())
-        );
-
-        if (buddies.isEmpty()) return null;
-
-        BlockPos bestPos = null;
-        int bestScore = Integer.MAX_VALUE;
-        double bestDistSqr = Double.MAX_VALUE;
-
-        for (CatoBaseMob buddy : buddies) {
-            if (pathBudget.exhausted()) break;
-
-            BlockPos buddyBase = buddy.blockPosition();
-
-            for (int dx = -rr; dx <= rr; dx++) {
-                for (int dz = -rr; dz <= rr; dz++) {
-                    if (dx == 0 && dz == 0) continue;
-
-                    BlockPos candidate = buddyBase.offset(dx, 0, dz);
-
-                    // Snap to ground
-                    BlockPos ground = findGround(level, candidate.above(8));
-                    if (ground == null) continue;
-
-                    BlockPos standPos = ground.above();
-
-                    // ✅ NEW: blacklist guard (join pass too)
-                    if (mob.isSleepSpotBlacklisted(standPos)) continue;
-
-                    // Home radius check
-                    if (enforceHome && home != null) {
-                        double ddx = (standPos.getX() + 0.5D) - (home.getX() + 0.5D);
-                        double ddz = (standPos.getZ() + 0.5D) - (home.getZ() + 0.5D);
-                        if ((ddx * ddx + ddz * ddz) > homeRadiusSqr) continue;
-                    }
-
-                    if (!isStandPosValidForSleep(mob, info, standPos, minHeadroom, pathBudget)) continue;
-
-                    int score = scoreSpot(mob, info, level, standPos, minHeadroom);
-
-                    // EXTRA strong "join sleeper" preference:
-                    double distToBuddy = standPos.distSqr(buddyBase);
-                    if (distToBuddy <= 2.5D) score -= Math.max(4, info.sleepBuddyScoreBonusPerBuddy() * 2);
-                    else if (distToBuddy <= 10.0D) score -= Math.max(2, info.sleepBuddyScoreBonusPerBuddy());
-
-                    score += strikePenalty(mob, info, standPos);
-
-                    double distToMob = distSqrToMob(mob, standPos);
-
-                    if (score < bestScore || (score == bestScore && distToMob < bestDistSqr)) {
-                        bestScore = score;
-                        bestDistSqr = distToMob;
-                        bestPos = standPos;
-                    }
-                }
-            }
-        }
-
-        return bestPos;
+    private static boolean isCurrentlySleepTime(CatoBaseMob mob, CatoMobSpeciesInfo info) {
+        boolean isDay = mob.level().isDay();
+        return (isDay && info.sleepAtDay()) || (!isDay && info.sleepAtNight());
     }
 
     // ================================================================
-    // Package-private helpers (shared by buddy-relocator)
+    // Compatibility helper: old callers (SleepBuddyRelocator, etc.)
     // ================================================================
-
-    static boolean isStandPosValidForSleep(
-            CatoBaseMob mob,
-            CatoMobSpeciesInfo info,
-            BlockPos standPos,
-            int minHeadroom,
-            PathBudget pathBudget
-    ) {
-        if (standPos == null) return false;
-
-        // ✅ NEW: global blacklist check (covers all callers)
-        if (mob.isSleepSpotBlacklisted(standPos)) return false;
-
-        Level level = mob.level();
-
-        // Don’t stack sleepers on the same block
-        if (isSleepingMobAlreadyHere(mob, level, standPos)) return false;
-
-        // Home radius rule (optional)
-        if (info.sleepSearchRespectHomeRadius()
-                && mob.shouldStayWithinHomeRadius()
-                && mob.getHomePos() != null) {
-
-            BlockPos home = mob.getHomePos();
-            double r = mob.getHomeRadius();
-            double dx = (standPos.getX() + 0.5D) - (home.getX() + 0.5D);
-            double dz = (standPos.getZ() + 0.5D) - (home.getZ() + 0.5D);
-            if ((dx * dx + dz * dz) > (r * r)) return false;
-        }
-
-        // Ground rule
-        if (!hasRequiredGround(level, standPos, info)) return false;
-
-        // Headroom
-        if (!hasHeadroom(level, standPos, minHeadroom)) return false;
-
-        // Roof
-        int roofMax = Math.max(1, info.sleepSearchCeilingScanMaxBlocks());
-        int roofDy = mob.roofDistance(standPos, roofMax);
-        if (roofDy == -1) return false;
-        if (roofDy < minHeadroom) return false;
-
-        // Reachability (counts against budget)
-        if (pathBudget != null && pathBudget.exhausted()) return false;
-        if (pathBudget != null) pathBudget.consumeOne();
-
-        var path = mob.getNavigation().createPath(standPos, 0);
-        return path != null && path.canReach();
-    }
-
-    // Same validation as above, but WITHOUT createPath()/budget use
-    static boolean isStandPosValidForSleepNoPath(
-            CatoBaseMob mob,
-            CatoMobSpeciesInfo info,
-            BlockPos standPos,
-            int minHeadroom
-    ) {
-        if (standPos == null) return false;
-
-        // ✅ NEW: global blacklist check (covers all callers)
-        if (mob.isSleepSpotBlacklisted(standPos)) return false;
-
-        Level level = mob.level();
-
-        if (isSleepingMobAlreadyHere(mob, level, standPos)) return false;
-
-        if (info.sleepSearchRespectHomeRadius()
-                && mob.shouldStayWithinHomeRadius()
-                && mob.getHomePos() != null) {
-
-            BlockPos home = mob.getHomePos();
-            double r = mob.getHomeRadius();
-            double dx = (standPos.getX() + 0.5D) - (home.getX() + 0.5D);
-            double dz = (standPos.getZ() + 0.5D) - (home.getZ() + 0.5D);
-            if ((dx * dx + dz * dz) > (r * r)) return false;
-        }
-
-        if (!hasRequiredGround(level, standPos, info)) return false;
-        if (!hasHeadroom(level, standPos, minHeadroom)) return false;
-
-        int roofMax = Math.max(1, info.sleepSearchCeilingScanMaxBlocks());
-        int roofDy = mob.roofDistance(standPos, roofMax);
-        if (roofDy == -1) return false;
-        if (roofDy < minHeadroom) return false;
-
-        return true;
-    }
-
-    static boolean hasHeadroom(Level level, BlockPos standPos, int minHeadroom) {
-        for (int dy = 0; dy < minHeadroom; dy++) {
-            if (!level.isEmptyBlock(standPos.above(dy))) return false;
-        }
-        return true;
-    }
-
     @Nullable
     static BlockPos findGround(Level level, BlockPos start) {
         BlockPos pos = start;
@@ -494,109 +809,5 @@ public final class SleepSpotFinder {
 
         if (level.isEmptyBlock(pos)) return null;
         return pos;
-    }
-
-    static boolean isSleepingMobAlreadyHere(CatoBaseMob mob, Level level, BlockPos standPos) {
-        var box = new net.minecraft.world.phys.AABB(
-                standPos.getX(), standPos.getY(), standPos.getZ(),
-                standPos.getX() + 1.0D, standPos.getY() + 1.5D, standPos.getZ() + 1.0D
-        );
-
-        for (var e : level.getEntities(mob, box, ent -> ent instanceof CatoBaseMob)) {
-            CatoBaseMob other = (CatoBaseMob) e;
-            if (other != mob && other.isSleeping()) return true;
-        }
-        return false;
-    }
-
-    private static boolean isCurrentlySleepTime(CatoBaseMob mob, CatoMobSpeciesInfo info) {
-        boolean isDay = mob.level().isDay();
-        return (isDay && info.sleepAtDay()) || (!isDay && info.sleepAtNight());
-    }
-
-    static boolean hasRequiredGround(Level level, BlockPos standPos, CatoMobSpeciesInfo info) {
-        if (!info.sleepSearchRequireSolidGround()) return true;
-
-        BlockPos below = standPos.below();
-        BlockState belowState = level.getBlockState(below);
-
-        // Don't sleep on leaves as "ground"
-        if (belowState.is(BlockTags.LEAVES)) return false;
-
-        // Must be sturdy enough to stand on
-        return belowState.isFaceSturdy(level, below, Direction.UP);
-    }
-
-    private static int countSleepingBuddiesNear(
-            CatoBaseMob mob,
-            CatoMobSpeciesInfo info,
-            Level level,
-            BlockPos standPos
-    ) {
-        if (!info.sleepPreferSleepingBuddies()) return 0;
-        if (info.sleepBuddyTypes() == null || info.sleepBuddyTypes().isEmpty()) return 0;
-
-        double r = Math.max(0.0D, info.sleepBuddySearchRadius());
-        if (r <= 0.0D) return 0;
-
-        int max = Math.max(0, info.sleepBuddyMaxCount());
-        if (max <= 0) return 0;
-
-        var box = new net.minecraft.world.phys.AABB(
-                standPos.getX() - r, standPos.getY() - 2, standPos.getZ() - r,
-                standPos.getX() + 1 + r, standPos.getY() + 2, standPos.getZ() + 1 + r
-        );
-
-        int count = 0;
-
-        for (var e : level.getEntities(mob, box, ent -> ent instanceof CatoBaseMob)) {
-            CatoBaseMob other = (CatoBaseMob) e;
-
-            if (other == mob) continue;
-            if (!other.isSleeping()) continue;
-            if (!info.sleepBuddyTypes().contains(other.getType())) continue;
-
-            count++;
-            if (count >= max) break;
-        }
-
-        return count;
-    }
-
-    private static int countAwakeBuddiesNear(
-            CatoBaseMob mob,
-            CatoMobSpeciesInfo info,
-            Level level,
-            BlockPos standPos
-    ) {
-        if (!info.sleepPreferSleepingBuddies()) return 0;
-        if (info.sleepBuddyTypes() == null || info.sleepBuddyTypes().isEmpty()) return 0;
-
-        double r = Math.max(0.0D, info.sleepBuddySearchRadius());
-        if (r <= 0.0D) return 0;
-
-        int max = Math.max(0, info.sleepBuddyMaxCount());
-        if (max <= 0) return 0;
-
-        var box = new net.minecraft.world.phys.AABB(
-                standPos.getX() - r, standPos.getY() - 2, standPos.getZ() - r,
-                standPos.getX() + 1 + r, standPos.getY() + 2, standPos.getZ() + 1 + r
-        );
-
-        int count = 0;
-
-        for (var e : level.getEntities(mob, box, ent -> ent instanceof CatoBaseMob)) {
-            CatoBaseMob other = (CatoBaseMob) e;
-
-            if (other == mob) continue;
-            if (!other.isAlive()) continue;
-            if (!info.sleepBuddyTypes().contains(other.getType())) continue;
-            if (other.isSleeping()) continue;
-
-            count++;
-            if (count >= max) break;
-        }
-
-        return count;
     }
 }

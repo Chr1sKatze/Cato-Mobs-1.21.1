@@ -90,6 +90,11 @@ public final class CatoMobSpeciesInfoBuilder {
     private double wanderMinRadius = 2.0D;
     private double wanderMaxRadius = 16.0D;
 
+    // ✅ NEW: wander attempt pacing (interval + chance, like sleep)
+    // Default keeps old feel (≈ 1% per tick => ~every 100 ticks)
+    private int wanderAttemptIntervalTicks = 100;
+    private float wanderAttemptChance = 1.0F;
+
     private boolean stayWithinHomeRadius = false;
     private double homeRadius = 64.0D;
     private double wanderRunDistanceThreshold = -1.0D;
@@ -101,6 +106,24 @@ public final class CatoMobSpeciesInfoBuilder {
 
     private CatoMobSpeciesInfo.WaterMovementConfig waterMovement =
             CatoMobSpeciesInfo.WaterMovementConfig.disabled();
+
+    // -----------------------------
+    // 5.2) Surface preference (NEW)
+    // -----------------------------
+    private CatoMobSpeciesInfo.SurfacePreferenceConfig surfacePreference =
+            CatoMobSpeciesInfo.SurfacePreferenceConfig.neutral();
+
+    // -----------------------------
+    // 5.3) Fun swim (optional; disabled by default) (NEW)
+    // -----------------------------
+    private boolean funSwimEnabled = false;
+    private boolean funSwimOnlyIfSunny = false;
+    private boolean funSwimAvoidNight = false;
+    private int funSwimCheckIntervalTicks = 20 * 30; // check every 30s
+    private float funSwimChance = 0.0F;              // 0 = never
+    private int funSwimDurationTicks = 20 * 15;      // 15s swim
+    private double funSwimSearchRadius = 16.0D;
+    private int funSwimSearchAttempts = 16;
 
     // -----------------------------
     // 5.5) Rain shelter (disabled by default)
@@ -306,6 +329,18 @@ public final class CatoMobSpeciesInfoBuilder {
         return this;
     }
 
+    /**
+     * ✅ NEW: Wander attempt pacing (interval + chance), just like sleepAttempts().
+     *
+     * intervalTicks: how often we "consider" wandering
+     * chance: chance to actually start wandering when that interval triggers
+     */
+    public CatoMobSpeciesInfoBuilder wanderAttempts(int intervalTicks, float chance) {
+        this.wanderAttemptIntervalTicks = intervalTicks;
+        this.wanderAttemptChance = chance;
+        return this;
+    }
+
     public CatoMobSpeciesInfoBuilder home(boolean stayWithinHomeRadius, double homeRadius) {
         this.stayWithinHomeRadius = stayWithinHomeRadius;
         this.homeRadius = homeRadius;
@@ -334,6 +369,56 @@ public final class CatoMobSpeciesInfoBuilder {
         this.waterMovement = new CatoMobSpeciesInfo.WaterMovementConfig(
                 dampingEnabled, verticalDamping, verticalSpeedClamp, dampingApplyThreshold
         );
+        return this;
+    }
+
+    // ================================================================
+    // ✅ Surface preference fluent setters (NEW)
+    // ================================================================
+
+    public CatoMobSpeciesInfoBuilder surfacePreference(double water, double solid, double soft, double hard) {
+        this.surfacePreference = new CatoMobSpeciesInfo.SurfacePreferenceConfig(water, solid, soft, hard);
+        return this;
+    }
+
+    public CatoMobSpeciesInfoBuilder preferSoftLand() {
+        this.surfacePreference = CatoMobSpeciesInfo.SurfacePreferenceConfig.preferSoftLand();
+        return this;
+    }
+
+    public CatoMobSpeciesInfoBuilder preferHardLand() {
+        this.surfacePreference = CatoMobSpeciesInfo.SurfacePreferenceConfig.preferHardLand();
+        return this;
+    }
+
+    public CatoMobSpeciesInfoBuilder waterLover() {
+        this.surfacePreference = CatoMobSpeciesInfo.SurfacePreferenceConfig.waterLover();
+        return this;
+    }
+
+    // ================================================================
+    // ✅ Fun swim fluent setter (NEW)
+    // ================================================================
+
+    public CatoMobSpeciesInfoBuilder funSwim(
+            boolean enabled,
+            boolean onlyIfSunny,
+            boolean avoidNight,
+            int checkIntervalTicks,
+            float chance,
+            int durationTicks,
+            double searchRadius,
+            int searchAttempts
+    ) {
+        this.funSwimEnabled = enabled;
+        this.funSwimOnlyIfSunny = onlyIfSunny;
+        this.funSwimAvoidNight = avoidNight;
+
+        this.funSwimCheckIntervalTicks = Math.max(20, checkIntervalTicks);
+        this.funSwimChance = clamp01(chance);
+        this.funSwimDurationTicks = Math.max(20, durationTicks);
+        this.funSwimSearchRadius = Math.max(4.0D, searchRadius);
+        this.funSwimSearchAttempts = Math.max(4, searchAttempts);
         return this;
     }
 
@@ -529,6 +614,10 @@ public final class CatoMobSpeciesInfoBuilder {
             moveStopAfter = moveDelay;
         }
 
+        // ✅ NEW: wander attempt pacing safety
+        int wanderInterval = Math.max(1, this.wanderAttemptIntervalTicks);
+        float wanderChance = clamp01(this.wanderAttemptChance);
+
         CatoMobSpeciesInfo.WaterMovementConfig wmIn =
                 (this.waterMovement == null) ? CatoMobSpeciesInfo.WaterMovementConfig.disabled() : this.waterMovement;
 
@@ -540,6 +629,38 @@ public final class CatoMobSpeciesInfoBuilder {
             double clamp = Math.max(0.0D, wmIn.verticalSpeedClamp());
             double thresh = Math.max(0.0D, wmIn.dampingApplyThreshold());
             waterMovementSafe = new CatoMobSpeciesInfo.WaterMovementConfig(true, damping, clamp, thresh);
+        }
+
+        // ✅ Surface preference safety
+        CatoMobSpeciesInfo.SurfacePreferenceConfig spIn =
+                (this.surfacePreference == null) ? CatoMobSpeciesInfo.SurfacePreferenceConfig.neutral() : this.surfacePreference;
+
+        final CatoMobSpeciesInfo.SurfacePreferenceConfig surfacePreferenceSafe =
+                new CatoMobSpeciesInfo.SurfacePreferenceConfig(
+                        spIn.preferWaterSurfaceWeight(),
+                        spIn.preferSolidSurfaceWeight(),
+                        spIn.preferSoftGroundWeight(),
+                        spIn.preferHardGroundWeight()
+                );
+
+        // ================================================================
+        // ✅ Fun swim safety (NEW)
+        // ================================================================
+        boolean funEnabled = this.funSwimEnabled;
+
+        boolean funOnlySunny = this.funSwimOnlyIfSunny;
+        boolean funAvoidNight = this.funSwimAvoidNight;
+
+        int funInterval = Math.max(20, this.funSwimCheckIntervalTicks);
+        float funChance = clamp01(this.funSwimChance);
+        int funDuration = Math.max(20, this.funSwimDurationTicks);
+        double funRadius = Math.max(4.0D, this.funSwimSearchRadius);
+        int funAttempts = Math.max(4, this.funSwimSearchAttempts);
+
+        if (!funEnabled) {
+            funOnlySunny = false;
+            funAvoidNight = false;
+            funChance = 0.0f;
         }
 
         boolean preferBuddies = this.sleepPreferSleepingBuddies
@@ -687,6 +808,11 @@ public final class CatoMobSpeciesInfoBuilder {
                 runChance,
                 minRadius,
                 maxRadius,
+
+                // ✅ NEW: wander attempt pacing
+                wanderInterval,
+                wanderChance,
+
                 stayWithinHomeRadius,
                 Math.max(0.0D, homeRadius),
                 wanderRunDistanceThreshold,
@@ -694,6 +820,19 @@ public final class CatoMobSpeciesInfoBuilder {
                 // 5) Water
                 waterMul,
                 waterMovementSafe,
+
+                // 5.2) Surface preference (NEW)
+                surfacePreferenceSafe,
+
+                // 5.3) Fun swim (NEW)
+                funEnabled,
+                funOnlySunny,
+                funAvoidNight,
+                funInterval,
+                funChance,
+                funDuration,
+                funRadius,
+                funAttempts,
 
                 // 5.5) Rain shelter
                 rainEnabled,

@@ -86,6 +86,10 @@ public record CatoMobSpeciesInfo(
         double wanderMinRadius,
         double wanderMaxRadius,
 
+        // ✅ NEW: wander attempt pacing (like sleep pacing)
+        int wanderAttemptIntervalTicks,
+        float wanderAttemptChance,
+
         boolean stayWithinHomeRadius,
         double homeRadius,
 
@@ -96,6 +100,23 @@ public record CatoMobSpeciesInfo(
         // ================================================================
         double waterSwimSpeedMultiplier,
         WaterMovementConfig waterMovement,
+
+        // ================================================================
+        // 5.2) SURFACE PREFERENCE (water vs solid + soft vs hard ground)
+        // ================================================================
+        SurfacePreferenceConfig surfacePreference,
+
+        // ================================================================
+        // 5.3) FUN SWIM (optional playful water behavior for land mobs)
+        // ================================================================
+        boolean funSwimEnabled,
+        boolean funSwimOnlyIfSunny,
+        boolean funSwimAvoidNight,
+        int funSwimCheckIntervalTicks,
+        float funSwimChance,
+        int funSwimDurationTicks,
+        double funSwimSearchRadius,
+        int funSwimSearchAttempts,
 
         // ================================================================
         // 5.5) RAIN SHELTER (seek roof while raining + peek + roof-wander)
@@ -192,11 +213,6 @@ public record CatoMobSpeciesInfo(
         boolean sleepSearchRequireSolidGround
 
 ) {
-    /**
-     * WaterMovementConfig
-     *
-     * Pure data used by WaterMovementComponent.
-     */
     public record WaterMovementConfig(
             boolean dampingEnabled,
             double verticalDamping,
@@ -209,6 +225,29 @@ public record CatoMobSpeciesInfo(
 
         public static WaterMovementConfig defaultLandDamping() {
             return new WaterMovementConfig(true, 0.7D, 0.4D, 0.2D);
+        }
+    }
+
+    public record SurfacePreferenceConfig(
+            double preferWaterSurfaceWeight,
+            double preferSolidSurfaceWeight,
+            double preferSoftGroundWeight,
+            double preferHardGroundWeight
+    ) {
+        public static SurfacePreferenceConfig neutral() {
+            return new SurfacePreferenceConfig(0.0D, 0.0D, 0.0D, 0.0D);
+        }
+
+        public static SurfacePreferenceConfig preferSoftLand() {
+            return new SurfacePreferenceConfig(0.0D, 1.0D, 1.0D, 0.0D);
+        }
+
+        public static SurfacePreferenceConfig preferHardLand() {
+            return new SurfacePreferenceConfig(0.0D, 1.0D, 0.0D, 1.0D);
+        }
+
+        public static SurfacePreferenceConfig waterLover() {
+            return new SurfacePreferenceConfig(1.0D, 0.2D, 0.0D, 0.0D);
         }
     }
 }

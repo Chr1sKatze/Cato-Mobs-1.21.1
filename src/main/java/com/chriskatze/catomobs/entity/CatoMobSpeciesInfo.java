@@ -78,6 +78,21 @@ public record CatoMobSpeciesInfo(
         int attackMoveStopAfterTicks,
 
         // ================================================================
+        // 3.1) SPECIAL MELEE (timed-attack system)
+        // ================================================================
+        boolean meleeSpecialEnabled,
+        double meleeSpecialTriggerRange,
+        double meleeSpecialHitRange,
+        int meleeSpecialCooldownTicks,
+        int meleeSpecialAnimTotalTicks,
+        int meleeSpecialHitDelayTicks,
+        double meleeSpecialDamage,
+        boolean meleeSpecialMoveDuringAttackAnimation,
+        int meleeSpecialMoveStartDelayTicks,
+        int meleeSpecialMoveStopAfterTicks,
+        float meleeSpecialUseChance,
+
+        // ================================================================
         // 4) WANDER / MOVEMENT (goal tuning)
         // ================================================================
         double wanderWalkSpeed,

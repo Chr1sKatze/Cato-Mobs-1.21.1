@@ -260,6 +260,10 @@ public abstract class CatoBaseMob extends Animal {
     private static final EntityDataAccessor<Boolean> DATA_ATTACKING =
             SynchedEntityData.defineId(CatoBaseMob.class, EntityDataSerializers.BOOLEAN);
 
+    /** Synced: which attack type is currently active (normal/special, melee/ranged). */
+    private static final EntityDataAccessor<Integer> DATA_ATTACK_ID =
+            SynchedEntityData.defineId(CatoBaseMob.class, EntityDataSerializers.INT);
+
     /** Debug overlay toggle (synced). */
     private static final EntityDataAccessor<Boolean> DATA_DEBUG_AI =
             SynchedEntityData.defineId(CatoBaseMob.class, EntityDataSerializers.BOOLEAN);
@@ -273,6 +277,7 @@ public abstract class CatoBaseMob extends Animal {
         super.defineSynchedData(builder);
         builder.define(DATA_MOVE_MODE, MOVE_IDLE);
         builder.define(DATA_ATTACKING, false);
+        builder.define(DATA_ATTACK_ID, -1);
         builder.define(DATA_VISUALLY_ANGRY, false);
         builder.define(DATA_SLEEPING, false);
         builder.define(DATA_DEBUG_AI, false);
@@ -297,6 +302,25 @@ public abstract class CatoBaseMob extends Animal {
     protected void setAttacking(boolean attacking) {
         if (attacking == this.entityData.get(DATA_ATTACKING)) return;
         this.entityData.set(DATA_ATTACKING, attacking);
+    }
+
+    public int getAttackIdSynced() {
+        return this.entityData.get(DATA_ATTACK_ID);
+    }
+
+    protected void setAttackIdSynced(@Nullable CatoAttackId id) {
+        this.entityData.set(DATA_ATTACK_ID, id == null ? -1 : id.ordinal());
+    }
+
+    @Nullable
+    public CatoAttackId getCurrentAttackId() {
+        int v = getAttackIdSynced();
+        if (v < 0) return null;
+
+        CatoAttackId[] values = CatoAttackId.values();
+        if (v >= values.length) return null;
+
+        return values[v];
     }
 
     public boolean isVisuallyAngry() { return this.entityData.get(DATA_VISUALLY_ANGRY); }
@@ -793,13 +817,12 @@ public abstract class CatoBaseMob extends Animal {
     public boolean canMoveDuringCurrentAttackAnimTick() {
         if (!this.isAttacking() || this.attackAnimTicksRemaining <= 0) return true;
 
-        final CatoMobSpeciesInfo info = infoServer(); // ✅ was this.getSpeciesInfo()
         int age = Math.max(0, this.attackAnimAgeTicks);
 
-        int startDelay = Math.max(0, info.attackMoveStartDelayTicks());
-        int stopAfter = info.attackMoveStopAfterTicks();
+        int startDelay = Math.max(0, this.currentAttackMoveStartDelay);
+        int stopAfter = this.currentAttackMoveStopAfter;
 
-        if (info.moveDuringAttackAnimation()) {
+        if (this.currentAttackMoveDuringAnim) {
             if (age < startDelay) return false;
             if (stopAfter > 0 && age >= stopAfter) return false;
             return true;
@@ -905,30 +928,89 @@ public abstract class CatoBaseMob extends Animal {
      * Called by melee goal when we want to start an attack.
      * We don’t deal damage now: we start timers and apply damage later.
      */
-    public boolean startTimedAttack(LivingEntity target) {
+    public boolean startTimedAttack(LivingEntity target, CatoAttackId id) {
         if (target == null || !target.isAlive()) return false;
         if (this.isSleeping()) return false;
 
-        // Don’t restart if already attacking.
+        // Don’t restart if already attacking
         if (this.attackTicksUntilHit > 0 || this.attackAnimTicksRemaining > 0 || this.queuedAttackTarget != null) {
             return false;
         }
 
-        CatoMobSpeciesInfo info = getSpeciesInfo();
+        final CatoMobSpeciesInfo info = infoServer();
 
-        // Optional: attack only if within trigger range.
-        double triggerRange = info.attackTriggerRange();
+        // Pick config depending on id
+        final double triggerRange;
+        final double hitRange;
+        final int animTotal;
+        final int hitDelay;
+        final double damage;
+        final boolean moveDuring;
+        final int moveStart;
+        final int moveStop;
+
+        switch (id) {
+            case MELEE_SPECIAL -> {
+                if (!info.meleeSpecialEnabled()) return false;
+
+                triggerRange = info.meleeSpecialTriggerRange();
+                hitRange     = info.meleeSpecialHitRange();
+                animTotal    = info.meleeSpecialAnimTotalTicks();
+                hitDelay     = info.meleeSpecialHitDelayTicks();
+                damage       = info.meleeSpecialDamage();
+                moveDuring   = info.meleeSpecialMoveDuringAttackAnimation();
+                moveStart    = info.meleeSpecialMoveStartDelayTicks();
+                moveStop     = info.meleeSpecialMoveStopAfterTicks();
+            }
+            case MELEE_NORMAL -> {
+                triggerRange = info.attackTriggerRange();
+                hitRange     = info.attackHitRange();
+                animTotal    = info.attackAnimTotalTicks();
+                hitDelay     = info.attackHitDelayTicks();
+                damage       = info.attackDamage(); // normal melee uses base attack damage
+                moveDuring   = info.moveDuringAttackAnimation();
+                moveStart    = info.attackMoveStartDelayTicks();
+                moveStop     = info.attackMoveStopAfterTicks();
+            }
+            default -> {
+                // You haven't implemented ranged yet
+                return false;
+            }
+        }
+
+        // Trigger range gate
         if (triggerRange > 0.0D) {
             double maxTriggerDistSqr = triggerRange * triggerRange;
             if (this.distanceToSqr(target) > maxTriggerDistSqr) return false;
         }
 
-        // Commit attack
-        this.queuedAttackTarget = target;
-        this.attackAnimTicksRemaining = info.attackAnimTotalTicks();
-        this.attackTicksUntilHit = info.attackHitDelayTicks();
+        // Commit attack id (server + synced for client animation)
+        this.currentAttackId = id;
+        this.setAttackIdSynced(id);
 
-        // reset "age since attack started" when starting a new attack
+        this.currentAttackDamage = Math.max(0.0D, damage);
+
+        double hr = (hitRange <= 0.0D) ? 2.0D : hitRange;
+        this.currentAttackHitRangeSqr = hr * hr;
+
+        this.currentAttackMoveDuringAnim = moveDuring;
+
+        int start = Math.max(0, moveStart);
+        int stop = moveStop;
+        if (stop > 0 && stop < start) stop = start;
+
+        this.currentAttackMoveStartDelay = start;
+        this.currentAttackMoveStopAfter = stop;
+
+        this.queuedAttackTarget = target;
+
+        int total = Math.max(1, animTotal);
+        int delay = Math.max(0, hitDelay);
+        if (delay >= total) delay = total - 1; // keep hit inside anim window
+
+        this.attackAnimTicksRemaining = total;
+        this.attackTicksUntilHit = delay;
+
         this.attackAnimAgeTicks = 0;
 
         this.onAttackAnimationStart(target);
@@ -941,10 +1023,31 @@ public abstract class CatoBaseMob extends Animal {
         this.attackTicksUntilHit = -1;
         this.attackAnimTicksRemaining = 0;
         this.queuedAttackTarget = null;
+
+        this.currentAttackId = null;
+        this.setAttackIdSynced(null);
+
+        this.currentAttackDamage = 0.0D;
+        this.currentAttackHitRangeSqr = 4.0D;
+        this.currentAttackMoveDuringAnim = false;
+        this.currentAttackMoveStartDelay = 0;
+        this.currentAttackMoveStopAfter = 0;
+
         this.setAttacking(false);
         this.attackAnimAgeTicks = 0;
         this.onAttackAnimationEnd();
     }
+
+    // Which attack is currently running
+    @Nullable
+    protected CatoAttackId currentAttackId = null;
+
+    // Cached parameters for the currently running attack
+    protected double currentAttackDamage = 0.0D;
+    protected double currentAttackHitRangeSqr = 4.0D; // default 2 blocks
+    protected boolean currentAttackMoveDuringAnim = false;
+    protected int currentAttackMoveStartDelay = 0;
+    protected int currentAttackMoveStopAfter = 0;
 
     // ================================================================
     // 14.5) MOVEMENT HOOK (shared water smoothing)
@@ -1564,41 +1667,56 @@ public abstract class CatoBaseMob extends Animal {
             boolean angryNow = (this.angerTime > 0 && this.getTarget() != null);
             this.setVisuallyAngry(angryNow);
 
-            if (this.getTarget() == null && (this.attackTicksUntilHit > 0 || this.attackAnimTicksRemaining > 0)) {
+            // ============================================================
+            // ✅ TIMED ATTACK SYSTEM (fixed: delay==0 + proper cleanup)
+            // ============================================================
+
+            // If we lost our target mid-attack, cancel cleanly
+            if (this.getTarget() == null && (this.attackTicksUntilHit >= 0 || this.attackAnimTicksRemaining > 0)) {
                 clearAttackState();
             }
 
-            if (this.attackTicksUntilHit > 0) {
-                this.attackTicksUntilHit--;
-
+            // ---------------------------
+            // Timed hit (supports delay==0)
+            // ---------------------------
+            if (this.attackTicksUntilHit >= 0) {
                 if (this.attackTicksUntilHit == 0) {
+                    // Time to apply hit now
                     if (this.queuedAttackTarget != null && this.queuedAttackTarget.isAlive()) {
-                        double hitRange = info.attackHitRange();
-                        if (hitRange <= 0.0D) hitRange = 2.0D;
-
-                        double maxHitDistSqr = hitRange * hitRange;
-
-                        if (this.distanceToSqr(this.queuedAttackTarget) <= maxHitDistSqr) {
-                            this.doHurtTarget(this.queuedAttackTarget);
+                        if (this.distanceToSqr(this.queuedAttackTarget) <= this.currentAttackHitRangeSqr) {
+                            this.queuedAttackTarget.hurt(
+                                    this.damageSources().mobAttack(this),
+                                    (float) this.currentAttackDamage
+                            );
                         }
                     }
+
+                    // consume hit
                     this.queuedAttackTarget = null;
+                    this.attackTicksUntilHit = -1;
+                } else {
+                    this.attackTicksUntilHit--;
                 }
             }
 
+            // ---------------------------
+            // Animation lifetime (end = clearAttackState)
+            // ---------------------------
             if (this.attackAnimTicksRemaining > 0) {
                 this.attackAnimTicksRemaining--;
                 this.attackAnimAgeTicks++;
 
                 if (this.attackAnimTicksRemaining == 0) {
-                    this.setAttacking(false);
-                    this.onAttackAnimationEnd();
-                    this.attackAnimAgeTicks = 0;
+                    // IMPORTANT: clears synced attack id + cached params + attacking flag
+                    clearAttackState();
                 }
             } else {
                 this.attackAnimAgeTicks = 0;
             }
 
+            // ============================================================
+            // Look at target if angry
+            // ============================================================
             if (this.angerTime > 0 && this.getTarget() != null) {
                 int maxYaw = this.getMaxHeadYRot();
                 int maxPitch = this.getMaxHeadXRot();

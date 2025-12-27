@@ -1,5 +1,6 @@
 package com.chriskatze.catomobs.entity.base;
 
+import com.chriskatze.catomobs.entity.CatoAttackId;
 import com.chriskatze.catomobs.entity.CatoMobSpeciesInfo;
 import com.chriskatze.catomobs.entity.CatoMobTemperament;
 import net.minecraft.world.entity.EntitySelector;
@@ -18,9 +19,6 @@ public class CatoMeleeAttackGoal extends Goal {
 
     private int attackCooldown;
     private int ticksUntilNextPathRecalc;
-
-    // cached per-goal-run
-    private double triggerRangeSqr = 4.0D; // default 2 blocks
 
     public CatoMeleeAttackGoal(CatoBaseMob mob, double speedModifier, boolean followEvenIfNotSeen, int attackCooldownTicks) {
         this.mob = mob;
@@ -82,12 +80,6 @@ public class CatoMeleeAttackGoal extends Goal {
             this.mob.onChaseStart(target);
         }
 
-        // cache trigger range for this run
-        final CatoMobSpeciesInfo info = this.mob.infoServer();
-        double trigger = info.attackTriggerRange();
-        if (trigger <= 0.0D) trigger = 2.0D;
-        this.triggerRangeSqr = trigger * trigger;
-
         this.mob.setAggressive(true);
         this.ticksUntilNextPathRecalc = 0;
         this.attackCooldown = 0;
@@ -97,7 +89,9 @@ public class CatoMeleeAttackGoal extends Goal {
     public void stop() {
         final LivingEntity target = this.mob.getTarget();
 
+        // clear ONLY if the target is invalid (creative/spectator)
         if (target != null && !EntitySelector.NO_CREATIVE_OR_SPECTATOR.test(target)) {
+            // target is creative/spectator -> clear
             this.mob.setTarget(null);
         }
 
@@ -133,7 +127,18 @@ public class CatoMeleeAttackGoal extends Goal {
         this.mob.getLookControl().setLookAt(target, 30.0F, 30.0F);
 
         final double distSqr = this.mob.distanceToSqr(target);
-        final boolean inTriggerRange = distSqr <= this.triggerRangeSqr;
+
+        // IMPORTANT: compute trigger ranges from species info
+        final CatoMobSpeciesInfo info = this.mob.infoServer();
+
+        final double normalTrigger = info.attackTriggerRange();
+        final double specialTrigger = info.meleeSpecialTriggerRange();
+
+        final boolean inNormalTriggerRange =
+                normalTrigger <= 0.0D || distSqr <= normalTrigger * normalTrigger;
+
+        final boolean inSpecialTriggerRange =
+                specialTrigger <= 0.0D || distSqr <= specialTrigger * specialTrigger;
 
         // ------------------------------------------------------------
         // Movement gating during attack animation (delay + stop window)
@@ -179,8 +184,8 @@ public class CatoMeleeAttackGoal extends Goal {
                 }
             }
         } else {
-            // original non-attacking chase logic (including inTriggerRange stop)
-            if (inTriggerRange) {
+            // ✅ Use NORMAL trigger range to decide when to stop chasing (so we don't stop too early)
+            if (inNormalTriggerRange) {
                 nav.stop();
                 this.ticksUntilNextPathRecalc = 4;
             } else {
@@ -214,9 +219,29 @@ public class CatoMeleeAttackGoal extends Goal {
         // Attack cooldown
         if (this.attackCooldown > 0) this.attackCooldown--;
 
-        if (inTriggerRange && this.attackCooldown <= 0) {
-            if (this.mob.startTimedAttack(target)) {
-                this.attackCooldown = this.baseAttackCooldownTicks;
+        // ------------------------------------------------------------
+        // ✅ Attack decision + trigger gating (fixes "normal stops working after special")
+        // ------------------------------------------------------------
+        if (this.attackCooldown <= 0) {
+            // 1) Decide special vs normal (chance-based)
+            boolean wantSpecial =
+                    info.meleeSpecialEnabled()
+                            && rng.nextFloat() < info.meleeSpecialUseChance();
+
+            // 2) Only allow special if actually within special trigger range; otherwise fall back to normal
+            boolean doSpecial = wantSpecial && inSpecialTriggerRange;
+
+            // 3) Now only attempt the chosen attack if we are within THAT attack's trigger
+            boolean inChosenTrigger = doSpecial ? inSpecialTriggerRange : inNormalTriggerRange;
+
+            if (inChosenTrigger) {
+                CatoAttackId id = doSpecial ? CatoAttackId.MELEE_SPECIAL : CatoAttackId.MELEE_NORMAL;
+
+                if (this.mob.startTimedAttack(target, id)) {
+                    this.attackCooldown = doSpecial
+                            ? info.meleeSpecialCooldownTicks()
+                            : this.baseAttackCooldownTicks;
+                }
             }
         }
 

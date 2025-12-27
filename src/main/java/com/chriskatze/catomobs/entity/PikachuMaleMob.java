@@ -46,6 +46,7 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
                     .core(8.0D, 1.0D, 0.30D, 16.0D, 0.08D)
                     .combat(2.0D, 4.0D, 70, 60, 30)
                     .chaseSpeed(1.60D)
+                    .specialMelee(true,2.0D,4.0D,70,60,30,4.0D,false,0,0,0.50f)
                     .moveDuringAttackAnimation(true)
                     .attackMoveWindow(0,0)
                     .wander(1.0D, 1.35D, 0.35F, 3.0D, 32.0D)
@@ -129,6 +130,7 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
     private static final RawAnimation WALK   = RawAnimation.begin().thenLoop("animation.pikachu.ground_walk");
     private static final RawAnimation RUN    = RawAnimation.begin().thenLoop("animation.pikachu.ground_run");
     private static final RawAnimation ATTACK = RawAnimation.begin().thenPlay("animation.pikachu.physical");
+    private static final RawAnimation ATTACK_SPECIAL = RawAnimation.begin().thenPlay("animation.pikachu.volttackle");
     private static final RawAnimation ANGRY  = RawAnimation.begin().thenLoop("animation.pikachu.angry");
     private static final RawAnimation BLINK  = RawAnimation.begin().thenPlay("animation.pikachu.blink");
     private static final RawAnimation SURFACE_IDLE = RawAnimation.begin().thenLoop("animation.pikachu.surfacewater_idle");
@@ -148,7 +150,14 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
         }
 
         if (mob.isAttacking()) {
-            state.setAndContinue(ATTACK);
+            CatoAttackId id = mob.getCurrentAttackId();
+
+            if (id == CatoAttackId.MELEE_SPECIAL) {
+                state.setAndContinue(ATTACK_SPECIAL); // new RawAnimation
+            } else {
+                state.setAndContinue(ATTACK);
+            }
+
             return PlayState.CONTINUE;
         }
 

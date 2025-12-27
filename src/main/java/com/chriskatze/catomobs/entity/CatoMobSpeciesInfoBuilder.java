@@ -82,6 +82,21 @@ public final class CatoMobSpeciesInfoBuilder {
     private int attackMoveStopAfterTicks = 0;
 
     // -----------------------------
+    // 3.5) Special Melee Combat
+    // -----------------------------
+    private boolean meleeSpecialEnabled = false;
+    private double meleeSpecialTriggerRange = 2.5D;
+    private double meleeSpecialHitRange = 2.5D;
+    private int meleeSpecialCooldownTicks = 40;
+    private int meleeSpecialAnimTotalTicks = 20;
+    private int meleeSpecialHitDelayTicks = 10;
+    private double meleeSpecialDamage = 2.0D; // example
+    private boolean meleeSpecialMoveDuringAttackAnimation = false;
+    private int meleeSpecialMoveStartDelayTicks = 0;
+    private int meleeSpecialMoveStopAfterTicks = 0;
+    private float meleeSpecialUseChance = 0.2f;
+
+    // -----------------------------
     // 4) Wander / movement
     // -----------------------------
     private double wanderWalkSpeed = 1.0D;
@@ -300,6 +315,33 @@ public final class CatoMobSpeciesInfoBuilder {
         this.attackCooldownTicks = cooldownTicks;
         this.attackAnimTotalTicks = animTotalTicks;
         this.attackHitDelayTicks = hitDelayTicks;
+        return this;
+    }
+
+    public CatoMobSpeciesInfoBuilder specialMelee(
+            boolean enabled,
+            double triggerRange,
+            double hitRange,
+            int cooldownTicks,
+            int animTotalTicks,
+            int hitDelayTicks,
+            double damage,
+            boolean moveDuringAnim,
+            int moveStartDelay,
+            int moveStopAfter,
+            float useChance
+    ) {
+        this.meleeSpecialEnabled = enabled;
+        this.meleeSpecialTriggerRange = triggerRange;
+        this.meleeSpecialHitRange = hitRange;
+        this.meleeSpecialCooldownTicks = cooldownTicks;
+        this.meleeSpecialAnimTotalTicks = animTotalTicks;
+        this.meleeSpecialHitDelayTicks = hitDelayTicks;
+        this.meleeSpecialDamage = damage;
+        this.meleeSpecialMoveDuringAttackAnimation = moveDuringAnim;
+        this.meleeSpecialMoveStartDelayTicks = moveStartDelay;
+        this.meleeSpecialMoveStopAfterTicks = moveStopAfter;
+        this.meleeSpecialUseChance = useChance;
         return this;
     }
 
@@ -576,8 +618,8 @@ public final class CatoMobSpeciesInfoBuilder {
     }
 
     // ================================================================
-    // Build with basic safety
-    // ================================================================
+// Build with basic safety
+// ================================================================
     public CatoMobSpeciesInfo build() {
         float attemptChance = clamp01(this.sleepAttemptChance);
         float continueChance = clamp01(this.sleepContinueChance);
@@ -753,6 +795,49 @@ public final class CatoMobSpeciesInfoBuilder {
             shuffleEnabled = false;
         }
 
+        // ================================================================
+        // ✅ SPECIAL MELEE safety (THIS WAS MISSING)
+        // ================================================================
+        boolean specialEnabled = this.meleeSpecialEnabled;
+
+        double specialTriggerRange = Math.max(0.0D, this.meleeSpecialTriggerRange);
+        double specialHitRange = Math.max(0.0D, this.meleeSpecialHitRange);
+
+        int specialCooldown = Math.max(0, this.meleeSpecialCooldownTicks);
+        int specialAnimTotal = Math.max(1, this.meleeSpecialAnimTotalTicks);
+        int specialHitDelay = Math.max(0, this.meleeSpecialHitDelayTicks);
+
+        double specialDamage = Math.max(0.0D, this.meleeSpecialDamage);
+
+        boolean specialMoveDuring = this.meleeSpecialMoveDuringAttackAnimation;
+
+        int specialMoveDelay = Math.max(0, this.meleeSpecialMoveStartDelayTicks);
+        int specialMoveStopAfter = this.meleeSpecialMoveStopAfterTicks;
+        if (specialMoveStopAfter > 0 && specialMoveStopAfter < specialMoveDelay) {
+            specialMoveStopAfter = specialMoveDelay;
+        }
+
+        float specialUseChance = clamp01(this.meleeSpecialUseChance);
+
+        // If disabled, force “off” values so downstream logic stays simple
+        if (!specialEnabled) {
+            specialUseChance = 0.0f;
+            specialCooldown = 0;
+            specialDamage = 0.0D;
+
+            specialMoveDuring = false;
+            specialMoveDelay = 0;
+            specialMoveStopAfter = 0;
+
+            // ranges can stay, but keeping them 0 makes debugging clearer
+            specialTriggerRange = 0.0D;
+            specialHitRange = 0.0D;
+
+            // animation fields still need valid ints (record expects them)
+            specialAnimTotal = 1;
+            specialHitDelay = 0;
+        }
+
         return new CatoMobSpeciesInfo(
                 // 1) Identity
                 movementType, temperament, sizeCategory,
@@ -791,7 +876,7 @@ public final class CatoMobSpeciesInfoBuilder {
                 anyCatoAllies,
                 allyTypesSafe,
 
-                // 3) Combat
+                // 3) Combat (normal timed attack)
                 Math.max(0.0D, attackTriggerRange),
                 Math.max(0.0D, attackHitRange),
                 Math.max(0, attackCooldownTicks),
@@ -801,6 +886,19 @@ public final class CatoMobSpeciesInfoBuilder {
                 this.moveDuringAttackAnimation,
                 moveDelay,
                 moveStopAfter,
+
+                // 3.1) ✅ SPECIAL MELEE (INSERTED HERE)
+                specialEnabled,
+                specialTriggerRange,
+                specialHitRange,
+                specialCooldown,
+                specialAnimTotal,
+                specialHitDelay,
+                specialDamage,
+                specialMoveDuring,
+                specialMoveDelay,
+                specialMoveStopAfter,
+                specialUseChance,
 
                 // 4) Wander
                 Math.max(0.0D, wanderWalkSpeed),

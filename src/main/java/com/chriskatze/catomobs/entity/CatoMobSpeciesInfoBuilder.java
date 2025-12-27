@@ -95,6 +95,7 @@ public final class CatoMobSpeciesInfoBuilder {
     private int meleeSpecialMoveStartDelayTicks = 0;
     private int meleeSpecialMoveStopAfterTicks = 0;
     private float meleeSpecialUseChance = 0.2f;
+    private int meleeSpecialAfterNormalHits = 0; // 0 = disabled
 
     // -----------------------------
     // 4) Wander / movement
@@ -329,7 +330,8 @@ public final class CatoMobSpeciesInfoBuilder {
             boolean moveDuringAnim,
             int moveStartDelay,
             int moveStopAfter,
-            float useChance
+            float useChance,
+            int afterNormalHits
     ) {
         this.meleeSpecialEnabled = enabled;
         this.meleeSpecialTriggerRange = triggerRange;
@@ -342,6 +344,7 @@ public final class CatoMobSpeciesInfoBuilder {
         this.meleeSpecialMoveStartDelayTicks = moveStartDelay;
         this.meleeSpecialMoveStopAfterTicks = moveStopAfter;
         this.meleeSpecialUseChance = useChance;
+        this.meleeSpecialAfterNormalHits = afterNormalHits;
         return this;
     }
 
@@ -818,6 +821,7 @@ public final class CatoMobSpeciesInfoBuilder {
         }
 
         float specialUseChance = clamp01(this.meleeSpecialUseChance);
+        int specialAfterHits = Math.max(0, this.meleeSpecialAfterNormalHits);
 
         // If disabled, force “off” values so downstream logic stays simple
         if (!specialEnabled) {
@@ -829,14 +833,15 @@ public final class CatoMobSpeciesInfoBuilder {
             specialMoveDelay = 0;
             specialMoveStopAfter = 0;
 
-            // ranges can stay, but keeping them 0 makes debugging clearer
             specialTriggerRange = 0.0D;
             specialHitRange = 0.0D;
 
-            // animation fields still need valid ints (record expects them)
             specialAnimTotal = 1;
             specialHitDelay = 0;
+
+            specialAfterHits = 0;
         }
+
 
         return new CatoMobSpeciesInfo(
                 // 1) Identity
@@ -899,6 +904,7 @@ public final class CatoMobSpeciesInfoBuilder {
                 specialMoveDelay,
                 specialMoveStopAfter,
                 specialUseChance,
+                specialAfterHits,
 
                 // 4) Wander
                 Math.max(0.0D, wanderWalkSpeed),

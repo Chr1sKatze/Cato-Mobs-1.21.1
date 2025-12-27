@@ -91,6 +91,7 @@ public record CatoMobSpeciesInfo(
         int meleeSpecialMoveStartDelayTicks,
         int meleeSpecialMoveStopAfterTicks,
         float meleeSpecialUseChance,
+        int meleeSpecialAfterNormalHits,
 
         // ================================================================
         // 4) WANDER / MOVEMENT (goal tuning)

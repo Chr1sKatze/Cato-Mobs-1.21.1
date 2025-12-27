@@ -20,6 +20,10 @@ public class CatoMeleeAttackGoal extends Goal {
     private int attackCooldown;
     private int ticksUntilNextPathRecalc;
 
+    // ✅ NEW: "special after X normal hits"
+    private int normalHitsSinceLastSpecial = 0;
+    private LivingEntity lastTarget = null;
+
     public CatoMeleeAttackGoal(CatoBaseMob mob, double speedModifier, boolean followEvenIfNotSeen, int attackCooldownTicks) {
         this.mob = mob;
         this.speedModifier = speedModifier;
@@ -83,6 +87,10 @@ public class CatoMeleeAttackGoal extends Goal {
         this.mob.setAggressive(true);
         this.ticksUntilNextPathRecalc = 0;
         this.attackCooldown = 0;
+
+        // ✅ NEW
+        this.normalHitsSinceLastSpecial = 0;
+        this.lastTarget = target;
     }
 
     @Override
@@ -99,6 +107,10 @@ public class CatoMeleeAttackGoal extends Goal {
         this.mob.getNavigation().stop();
         this.mob.setMoveMode(CatoBaseMob.MOVE_IDLE);
         this.mob.onChaseStop();
+
+        // ✅ NEW
+        this.normalHitsSinceLastSpecial = 0;
+        this.lastTarget = null;
     }
 
     @Override
@@ -110,6 +122,12 @@ public class CatoMeleeAttackGoal extends Goal {
     public void tick() {
         final LivingEntity target = this.mob.getTarget();
         if (target == null) return;
+
+        // ✅ NEW: reset the hit counter when the target changes
+        if (target != this.lastTarget) {
+            this.lastTarget = target;
+            this.normalHitsSinceLastSpecial = 0;
+        }
 
         // state can change while goal is running
         if (isInvalidPlayerTarget(target) || !canAttackNow()) {
@@ -162,9 +180,7 @@ public class CatoMeleeAttackGoal extends Goal {
         // Chase / pathing
         // ------------------------------------------------------------
         if (attacking && canMoveThisTick) {
-            // ✅ "secret sauce":
-            // While attacking AND allowed to move, DO NOT let inTriggerRange stop the nav.
-            // Keep re-issuing chase path so the mob continues to follow during the animation.
+            // While attacking AND allowed to move, keep chasing during the animation.
             if (nav.isDone()) {
                 this.ticksUntilNextPathRecalc = 0;
             }
@@ -172,7 +188,6 @@ public class CatoMeleeAttackGoal extends Goal {
             this.ticksUntilNextPathRecalc = Math.max(this.ticksUntilNextPathRecalc - 1, 0);
 
             if (this.ticksUntilNextPathRecalc == 0) {
-                // optional: respect LOS setting, just like normal chase
                 final boolean canSee = sensing.hasLineOfSight(target);
 
                 if (!canSee && !this.followEvenIfNotSeen) {
@@ -184,7 +199,7 @@ public class CatoMeleeAttackGoal extends Goal {
                 }
             }
         } else {
-            // ✅ Use NORMAL trigger range to decide when to stop chasing (so we don't stop too early)
+            // Use NORMAL trigger range to decide when to stop chasing
             if (inNormalTriggerRange) {
                 nav.stop();
                 this.ticksUntilNextPathRecalc = 4;
@@ -220,27 +235,47 @@ public class CatoMeleeAttackGoal extends Goal {
         if (this.attackCooldown > 0) this.attackCooldown--;
 
         // ------------------------------------------------------------
-        // ✅ Attack decision + trigger gating (fixes "normal stops working after special")
+        // ✅ Attack decision + trigger gating + "special after X normal hits"
         // ------------------------------------------------------------
         if (this.attackCooldown <= 0) {
-            // 1) Decide special vs normal (chance-based)
-            boolean wantSpecial =
-                    info.meleeSpecialEnabled()
-                            && rng.nextFloat() < info.meleeSpecialUseChance();
+            final boolean specialEnabled = info.meleeSpecialEnabled();
 
-            // 2) Only allow special if actually within special trigger range; otherwise fall back to normal
+            // A) Chance-based desire
+            boolean wantSpecialChance =
+                    specialEnabled && rng.nextFloat() < info.meleeSpecialUseChance();
+
+            // B) Counter-based force
+            int afterHits = info.meleeSpecialAfterNormalHits(); // 0 = disabled
+            boolean wantSpecialForced =
+                    specialEnabled && afterHits > 0 && this.normalHitsSinceLastSpecial >= afterHits;
+
+            // C) Merge: forced overrides chance
+            boolean wantSpecial = wantSpecialForced || wantSpecialChance;
+
+            // D) Only do special if within special trigger; otherwise fall back to normal
             boolean doSpecial = wantSpecial && inSpecialTriggerRange;
 
-            // 3) Now only attempt the chosen attack if we are within THAT attack's trigger
+            // E) Only attempt if within chosen trigger
             boolean inChosenTrigger = doSpecial ? inSpecialTriggerRange : inNormalTriggerRange;
 
             if (inChosenTrigger) {
                 CatoAttackId id = doSpecial ? CatoAttackId.MELEE_SPECIAL : CatoAttackId.MELEE_NORMAL;
 
                 if (this.mob.startTimedAttack(target, id)) {
+                    // set cooldown based on the attack we actually started
                     this.attackCooldown = doSpecial
                             ? info.meleeSpecialCooldownTicks()
                             : this.baseAttackCooldownTicks;
+
+                    // ✅ update counter
+                    if (doSpecial) {
+                        this.normalHitsSinceLastSpecial = 0;
+                    } else {
+                        // count only successful normal attack starts
+                        if (afterHits > 0) {
+                            this.normalHitsSinceLastSpecial++;
+                        }
+                    }
                 }
             }
         }

@@ -235,45 +235,62 @@ public class CatoMeleeAttackGoal extends Goal {
         if (this.attackCooldown > 0) this.attackCooldown--;
 
         // ------------------------------------------------------------
-        // ✅ Attack decision + trigger gating + "special after X normal hits"
+        // ✅ Attack decision + trigger gating + "eligible hit slots"
         // ------------------------------------------------------------
         if (this.attackCooldown <= 0) {
             final boolean specialEnabled = info.meleeSpecialEnabled();
+            final int afterHits = info.meleeSpecialAfterNormalHits(); // 0 = pure chance mode
+            final float chance = info.meleeSpecialUseChance();
 
-            // A) Chance-based desire
-            boolean wantSpecialChance =
-                    specialEnabled && rng.nextFloat() < info.meleeSpecialUseChance();
+            // Eligible slot?
+            final boolean eligibleSlot = specialEnabled && (
+                    afterHits <= 0 || this.normalHitsSinceLastSpecial >= afterHits
+            );
 
-            // B) Counter-based force
-            int afterHits = info.meleeSpecialAfterNormalHits(); // 0 = disabled
-            boolean wantSpecialForced =
-                    specialEnabled && afterHits > 0 && this.normalHitsSinceLastSpecial >= afterHits;
+            // Only roll chance if eligible AND in special trigger range
+            final boolean doSpecial =
+                    eligibleSlot
+                            && inSpecialTriggerRange
+                            && chance > 0.0f
+                            && rng.nextFloat() < chance;
 
-            // C) Merge: forced overrides chance
-            boolean wantSpecial = wantSpecialForced || wantSpecialChance;
-
-            // D) Only do special if within special trigger; otherwise fall back to normal
-            boolean doSpecial = wantSpecial && inSpecialTriggerRange;
-
-            // E) Only attempt if within chosen trigger
-            boolean inChosenTrigger = doSpecial ? inSpecialTriggerRange : inNormalTriggerRange;
+            // Use chosen trigger range
+            final boolean inChosenTrigger = doSpecial ? inSpecialTriggerRange : inNormalTriggerRange;
 
             if (inChosenTrigger) {
-                CatoAttackId id = doSpecial ? CatoAttackId.MELEE_SPECIAL : CatoAttackId.MELEE_NORMAL;
+                final CatoAttackId id = doSpecial ? CatoAttackId.MELEE_SPECIAL : CatoAttackId.MELEE_NORMAL;
 
                 if (this.mob.startTimedAttack(target, id)) {
-                    // set cooldown based on the attack we actually started
+                    // cooldown based on attack type
                     this.attackCooldown = doSpecial
                             ? info.meleeSpecialCooldownTicks()
                             : this.baseAttackCooldownTicks;
 
-                    // ✅ update counter
-                    if (doSpecial) {
+                    // ✅ Update the counter to match the semantics:
+                    if (afterHits <= 0) {
+                        // pure chance mode: no counter needed
                         this.normalHitsSinceLastSpecial = 0;
                     } else {
-                        // count only successful normal attack starts
-                        if (afterHits > 0) {
-                            this.normalHitsSinceLastSpecial++;
+                        if (doSpecial) {
+                            // special fired -> reset cycle
+                            this.normalHitsSinceLastSpecial = 0;
+                        } else {
+                            // normal attack happened
+                            if (eligibleSlot) {
+                                // This was an eligible slot but chance failed.
+                                // Restart the cycle counting this normal as the first one.
+                                // BUT: only restart if we were actually in special trigger range.
+                                // If we weren't in range, keep the slot "ready" so it can trigger once in range.
+                                if (inSpecialTriggerRange) {
+                                    this.normalHitsSinceLastSpecial = 1;
+                                } else {
+                                    // Hold at threshold so the next time we're in range, it's still an eligible slot.
+                                    this.normalHitsSinceLastSpecial = afterHits;
+                                }
+                            } else {
+                                // Not yet eligible -> keep counting up (cap at afterHits to avoid overflow)
+                                this.normalHitsSinceLastSpecial = Math.min(afterHits, this.normalHitsSinceLastSpecial + 1);
+                            }
                         }
                     }
                 }

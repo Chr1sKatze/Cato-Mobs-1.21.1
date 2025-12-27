@@ -41,17 +41,16 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
                     .groupFleeAllies(false, Set.of(CMEntities.PIKACHU_MALE.get())) // true(, null) = all catomobs are allies
 
                     // retaliation
-                    .retaliation(true,20 * 9)
+                    .retaliation(true,20 * 15)
                     // Core Tuning
                     .core(8.0D, 1.0D, 0.30D, 16.0D, 0.08D)
                     .combat(2.0D, 4.0D, 70, 60, 30)
                     .chaseSpeed(1.60D)
-                    .specialMelee(true,2.0D,4.0D,70,60,30,4.0D,false,0,0,0.0f,1)
+                    .specialMelee(true,2.0D,4.0D,70,60,30,4.0D,false,0,0,0.50f,1)
                     .moveDuringAttackAnimation(true)
                     .attackMoveWindow(0,0)
                     .wander(1.0D, 1.35D, 0.35F, 3.0D, 32.0D)
                     .wanderAttempts(100,0.75f)
-                    .preferSoftLand()
                     .surfacePreference(-0.5D, 1.5D,1.0D,0.0D)
                     .home(true, 96.0D)
                     .wanderRunDistanceThreshold(10.0D)

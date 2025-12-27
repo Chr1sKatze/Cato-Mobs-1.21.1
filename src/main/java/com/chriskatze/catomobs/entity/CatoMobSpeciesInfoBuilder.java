@@ -29,7 +29,6 @@ public final class CatoMobSpeciesInfoBuilder {
     // 2) Core attributes
     // -----------------------------
     private double maxHealth = 10.0D;
-    private double attackDamage = 1.0D;
     private double movementSpeed = 0.25D;
     private double followRange = 16.0D;
     private double gravity = 0.08D;
@@ -69,6 +68,7 @@ public final class CatoMobSpeciesInfoBuilder {
     // -----------------------------
     // 3) Combat timing
     // -----------------------------
+    private double attackDamage = 1.0D;
     private double attackTriggerRange = 2.5D;
     private double attackHitRange = 2.5D;
     private int attackCooldownTicks = 20;
@@ -96,6 +96,7 @@ public final class CatoMobSpeciesInfoBuilder {
     private int meleeSpecialMoveStopAfterTicks = 0;
     private float meleeSpecialUseChance = 0.2f;
     private int meleeSpecialAfterNormalHits = 0; // 0 = disabled
+    private boolean meleeSpecialChancePersistence = false;
 
     // -----------------------------
     // 4) Wander / movement
@@ -106,7 +107,7 @@ public final class CatoMobSpeciesInfoBuilder {
     private double wanderMinRadius = 2.0D;
     private double wanderMaxRadius = 16.0D;
 
-    // ✅ NEW: wander attempt pacing (interval + chance, like sleep)
+    // wander attempt pacing (interval + chance, like sleep)
     // Default keeps old feel (≈ 1% per tick => ~every 100 ticks)
     private int wanderAttemptIntervalTicks = 100;
     private float wanderAttemptChance = 1.0F;
@@ -299,25 +300,44 @@ public final class CatoMobSpeciesInfoBuilder {
         return this;
     }
 
-    public CatoMobSpeciesInfoBuilder core(double maxHealth, double attackDamage,
-                                          double movementSpeed, double followRange, double gravity) {
+    public CatoMobSpeciesInfoBuilder core(
+            double maxHealth,
+            double movementSpeed,
+            double followRange,
+            double gravity
+    ) {
         this.maxHealth = maxHealth;
-        this.attackDamage = attackDamage;
         this.movementSpeed = movementSpeed;
         this.followRange = followRange;
         this.gravity = gravity;
         return this;
     }
 
-    public CatoMobSpeciesInfoBuilder combat(double triggerRange, double hitRange,
-                                            int cooldownTicks, int animTotalTicks, int hitDelayTicks) {
+    public CatoMobSpeciesInfoBuilder combat(
+            double damage,
+            double triggerRange,
+            double hitRange,
+            int cooldownTicks,
+            int animTotalTicks,
+            int hitDelayTicks,
+            boolean moveDuringAnim,
+            int moveStartDelayTicks,
+            int moveStopAfterTicks
+    ) {
+        this.attackDamage = damage;
         this.attackTriggerRange = triggerRange;
         this.attackHitRange = hitRange;
         this.attackCooldownTicks = cooldownTicks;
         this.attackAnimTotalTicks = animTotalTicks;
         this.attackHitDelayTicks = hitDelayTicks;
+
+        this.moveDuringAttackAnimation = moveDuringAnim;
+        this.attackMoveStartDelayTicks = moveStartDelayTicks;
+        this.attackMoveStopAfterTicks = moveStopAfterTicks;
+
         return this;
     }
+
 
     public CatoMobSpeciesInfoBuilder specialMelee(
             boolean enabled,
@@ -331,7 +351,8 @@ public final class CatoMobSpeciesInfoBuilder {
             int moveStartDelay,
             int moveStopAfter,
             float useChance,
-            int afterNormalHits
+            int afterNormalHits,
+            boolean chancePersistence
     ) {
         this.meleeSpecialEnabled = enabled;
         this.meleeSpecialTriggerRange = triggerRange;
@@ -344,23 +365,16 @@ public final class CatoMobSpeciesInfoBuilder {
         this.meleeSpecialMoveStartDelayTicks = moveStartDelay;
         this.meleeSpecialMoveStopAfterTicks = moveStopAfter;
         this.meleeSpecialUseChance = useChance;
+
         this.meleeSpecialAfterNormalHits = afterNormalHits;
+        this.meleeSpecialChancePersistence = chancePersistence;
+
         return this;
     }
+
 
     public CatoMobSpeciesInfoBuilder chaseSpeed(double modifier) {
         this.chaseSpeedModifier = modifier;
-        return this;
-    }
-
-    public CatoMobSpeciesInfoBuilder moveDuringAttackAnimation(boolean allowMove) {
-        this.moveDuringAttackAnimation = allowMove;
-        return this;
-    }
-
-    public CatoMobSpeciesInfoBuilder attackMoveWindow(int startDelayTicks, int stopAfterTicks) {
-        this.attackMoveStartDelayTicks = startDelayTicks;
-        this.attackMoveStopAfterTicks = stopAfterTicks;
         return this;
     }
 
@@ -621,8 +635,8 @@ public final class CatoMobSpeciesInfoBuilder {
     }
 
     // ================================================================
-// Build with basic safety
-// ================================================================
+    // Build with basic safety
+    // ================================================================
     public CatoMobSpeciesInfo build() {
         float attemptChance = clamp01(this.sleepAttemptChance);
         float continueChance = clamp01(this.sleepContinueChance);
@@ -659,7 +673,7 @@ public final class CatoMobSpeciesInfoBuilder {
             moveStopAfter = moveDelay;
         }
 
-        // ✅ NEW: wander attempt pacing safety
+        // wander attempt pacing safety
         int wanderInterval = Math.max(1, this.wanderAttemptIntervalTicks);
         float wanderChance = clamp01(this.wanderAttemptChance);
 
@@ -676,7 +690,7 @@ public final class CatoMobSpeciesInfoBuilder {
             waterMovementSafe = new CatoMobSpeciesInfo.WaterMovementConfig(true, damping, clamp, thresh);
         }
 
-        // ✅ Surface preference safety
+        // Surface preference safety
         CatoMobSpeciesInfo.SurfacePreferenceConfig spIn =
                 (this.surfacePreference == null) ? CatoMobSpeciesInfo.SurfacePreferenceConfig.neutral() : this.surfacePreference;
 
@@ -689,7 +703,7 @@ public final class CatoMobSpeciesInfoBuilder {
                 );
 
         // ================================================================
-        // ✅ Fun swim safety (NEW)
+        // Fun swim safety
         // ================================================================
         boolean funEnabled = this.funSwimEnabled;
 
@@ -762,7 +776,7 @@ public final class CatoMobSpeciesInfoBuilder {
         }
 
         // ================================================================
-        // ✅ Rain shelter safety
+        // Rain shelter safety
         // ================================================================
         boolean rainEnabled = this.rainShelterEnabled;
 
@@ -799,7 +813,7 @@ public final class CatoMobSpeciesInfoBuilder {
         }
 
         // ================================================================
-        // ✅ SPECIAL MELEE safety (THIS WAS MISSING)
+        // SPECIAL MELEE safety
         // ================================================================
         boolean specialEnabled = this.meleeSpecialEnabled;
 
@@ -822,6 +836,7 @@ public final class CatoMobSpeciesInfoBuilder {
 
         float specialUseChance = clamp01(this.meleeSpecialUseChance);
         int specialAfterHits = Math.max(0, this.meleeSpecialAfterNormalHits);
+        boolean specialPersist = this.meleeSpecialChancePersistence;
 
         // If disabled, force “off” values so downstream logic stays simple
         if (!specialEnabled) {
@@ -840,6 +855,7 @@ public final class CatoMobSpeciesInfoBuilder {
             specialHitDelay = 0;
 
             specialAfterHits = 0;
+            specialPersist = false;
         }
 
 
@@ -852,7 +868,6 @@ public final class CatoMobSpeciesInfoBuilder {
 
                 // 2) Core
                 Math.max(1.0D, maxHealth),
-                Math.max(0.0D, attackDamage),
                 Math.max(0.0D, movementSpeed),
                 Math.max(0.0D, followRange),
                 gravity,
@@ -882,6 +897,7 @@ public final class CatoMobSpeciesInfoBuilder {
                 allyTypesSafe,
 
                 // 3) Combat (normal timed attack)
+                Math.max(0.0D, attackDamage),
                 Math.max(0.0D, attackTriggerRange),
                 Math.max(0.0D, attackHitRange),
                 Math.max(0, attackCooldownTicks),
@@ -905,6 +921,7 @@ public final class CatoMobSpeciesInfoBuilder {
                 specialMoveStopAfter,
                 specialUseChance,
                 specialAfterHits,
+                specialPersist,
 
                 // 4) Wander
                 Math.max(0.0D, wanderWalkSpeed),

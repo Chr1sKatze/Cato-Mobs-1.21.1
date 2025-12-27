@@ -33,60 +33,55 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
     public static final CatoMobSpeciesInfo SPECIES_INFO =
             CatoMobSpeciesInfoBuilder.create()
                     .identity(CatoMobMovementType.LAND, CatoMobTemperament.NEUTRAL, CatoMobSizeCategory.SMALL)
-                    // render
+
+                    // GEMERAL SETTINGS
+                    .core(8.0D, 0.3D, 16.0D, 0.08D)
                     .shadow(0.4f)
-                    // fleeing
+                    .home(true, 96.0D)
+                    .surfacePreference(-0.5D, 1.5D,1.0D,0.0D)
+
+                    // COMBAT BEHAVIOR
+                    .retaliation(true,20 * 15)
                     .flee(false, true, 4.0F, false, 20 * 30, 20 * 10, 1.35D, 20.0D)
                     .groupFlee(true,12.0D,10,false)
                     .groupFleeAllies(false, Set.of(CMEntities.PIKACHU_MALE.get())) // true(, null) = all catomobs are allies
 
-                    // retaliation
-                    .retaliation(true,20 * 15)
-                    // Core Tuning
-                    .core(8.0D, 1.0D, 0.30D, 16.0D, 0.08D)
-                    .combat(2.0D, 4.0D, 70, 60, 30)
+                    // FIGHT
+                    .combat(2.0D, 2.0D, 4.00, 70, 60,30,true,0,0)
+                    .specialMelee(true,2.0D,4.0D,70,60,30,4.0D,true,0,0,0.50f,1,false)
                     .chaseSpeed(1.60D)
-                    .specialMelee(true,2.0D,4.0D,70,60,30,4.0D,false,0,0,0.50f,1)
-                    .moveDuringAttackAnimation(true)
-                    .attackMoveWindow(0,0)
+
+                    // WANDERING AROUND BEHAVIOR
                     .wander(1.0D, 1.35D, 0.35F, 3.0D, 32.0D)
                     .wanderAttempts(100,0.75f)
-                    .surfacePreference(-0.5D, 1.5D,1.0D,0.0D)
-                    .home(true, 96.0D)
                     .wanderRunDistanceThreshold(10.0D)
 
-                    // Water (speed + "feel")
-                    .waterSwimSpeedMultiplier(2.2D)
-                    .waterMovement(true, 0.7D, 0.4D, 0.2D)
+                    // SWIMMING FOR FUN
                     .funSwim(true,true, true,20*30,1.0f,20*10,12.0D,24)
 
-                    // Sleep
+                    // WATER BEHAVIOR
+                    .waterSwimSpeedMultiplier(2.2D)
+                    .waterMovement(true, 0.7D, 0.4D, 0.2D)
+
+                    // SLEEP BEHAVIOR
                     .sleepWindow(true, true, false)
                     .sleepAttempts(20 * 5, 0.50f)
                     .sleepDuration(20 * 120, 20 * 240, 0.45f)
                     .sleepGrace(200, 400)
                     .sleepDesireWindow(400)
                     .sleepMemory(2, 2)
-
-                    // Social sleeping
+                    .sleepConstraints(true, false)
+                    .wakeRules(true, true, true, true, true)
                     .sleepBuddies(true, 48.0D, 4, 2, 25, true,
                             Set.of(CMEntities.PIKACHU_MALE.get()))
 
-                    // Constraints & wake rules
-                    .sleepConstraints(true, false)
-                    .wakeRules(true, true, true, true, true)
-
-                    // Search behavior
+                    // SLEEP SPOT SEARCHING
                     .sleepSearch(400, 32, 1, 12, 20 * 10, 20 * 3, 2.0D, 0.0D, true, true)
 
-                    // Rain shelter (seek roof while raining)
+                    // SEEK SHELTER FROM RAIN
                     .rainShelter(true, 20 * 2, 1.0f, 28.0D, 46, 12, 1.35D, 1.00D, 20 * 5)
-
-                    // Peek behavior (optional “step out into rain, then return”)
-                    .rainShelterPeek(20 * 20, 20 * 3, 20 * 5, 2.0D, 6.0D, 16)
-
-                    // Shuffle under roof (your “don’t stand still”)
-                    .rainShelterShuffle(true, 20 * 30, 20 * 50, 16)
+                    .rainShelterPeek(20 * 20, 20 * 3, 20 * 5, 2.0D, 6.0D, 16) // have a quick peek into the rain
+                    .rainShelterShuffle(true, 20 * 30, 20 * 50, 16) // move around under roof
 
                     .build();
 

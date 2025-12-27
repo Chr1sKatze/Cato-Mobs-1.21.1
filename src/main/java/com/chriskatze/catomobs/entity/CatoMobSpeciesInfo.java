@@ -26,7 +26,6 @@ public record CatoMobSpeciesInfo(
         // 2) CORE ATTRIBUTES (fed into AttributeSupplier)
         // ================================================================
         double maxHealth,
-        double attackDamage,
         double movementSpeed,
         double followRange,
         double gravity,
@@ -66,6 +65,7 @@ public record CatoMobSpeciesInfo(
         // ================================================================
         // 3) COMBAT / ATTACK TIMING (timed-attack system)
         // ================================================================
+        double attackDamage,
         double attackTriggerRange,
         double attackHitRange,
         int attackCooldownTicks,
@@ -92,6 +92,7 @@ public record CatoMobSpeciesInfo(
         int meleeSpecialMoveStopAfterTicks,
         float meleeSpecialUseChance,
         int meleeSpecialAfterNormalHits,
+        boolean meleeSpecialChancePersistence,
 
         // ================================================================
         // 4) WANDER / MOVEMENT (goal tuning)
@@ -102,7 +103,7 @@ public record CatoMobSpeciesInfo(
         double wanderMinRadius,
         double wanderMaxRadius,
 
-        // ✅ NEW: wander attempt pacing (like sleep pacing)
+        // wander attempt pacing (like sleep pacing)
         int wanderAttemptIntervalTicks,
         float wanderAttemptChance,
 
@@ -155,7 +156,7 @@ public record CatoMobSpeciesInfo(
         // after rain stops
         int rainShelterLingerAfterRainTicks,
 
-        // "peek" behavior (✅ human-tunable)
+        // "peek" behavior
         int rainShelterPeekAvgIntervalTicks,
         int rainShelterPeekMinTicks,
         int rainShelterPeekMaxTicks,
@@ -163,7 +164,7 @@ public record CatoMobSpeciesInfo(
         double rainShelterPeekDistanceMaxBlocks,
         int rainShelterPeekSearchAttempts,
 
-        // ✅ roof-wander pacing under shelter (cleaner API: no radius params here)
+        // roof-wander pacing under shelter (cleaner API: no radius params here)
         boolean rainShelterShuffleEnabled,
         int rainShelterShuffleIntervalMinTicks,
         int rainShelterShuffleIntervalMaxTicks,

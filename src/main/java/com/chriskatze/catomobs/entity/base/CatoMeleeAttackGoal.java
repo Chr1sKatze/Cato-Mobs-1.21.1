@@ -138,7 +138,11 @@ public class CatoMeleeAttackGoal extends Goal {
         // ------------------------------------------------------------
         // Movement gating during attack animation (delay + stop window)
         // ------------------------------------------------------------
-        if (this.mob.isAttacking() && !this.mob.canMoveDuringCurrentAttackAnimTick()) {
+        final boolean attacking = this.mob.isAttacking();
+        final boolean canMoveThisTick = !attacking || this.mob.canMoveDuringCurrentAttackAnimTick();
+
+        // If attacking but movement NOT allowed -> stop and do nothing else
+        if (attacking && !canMoveThisTick) {
             nav.stop();
             this.ticksUntilNextPathRecalc = 4;
 
@@ -150,12 +154,12 @@ public class CatoMeleeAttackGoal extends Goal {
         }
 
         // ------------------------------------------------------------
-        // Normal chase/pathing
+        // Chase / pathing
         // ------------------------------------------------------------
-        if (inTriggerRange) {
-            nav.stop();
-            this.ticksUntilNextPathRecalc = 4;
-        } else {
+        if (attacking && canMoveThisTick) {
+            // ✅ "secret sauce":
+            // While attacking AND allowed to move, DO NOT let inTriggerRange stop the nav.
+            // Keep re-issuing chase path so the mob continues to follow during the animation.
             if (nav.isDone()) {
                 this.ticksUntilNextPathRecalc = 0;
             }
@@ -163,6 +167,7 @@ public class CatoMeleeAttackGoal extends Goal {
             this.ticksUntilNextPathRecalc = Math.max(this.ticksUntilNextPathRecalc - 1, 0);
 
             if (this.ticksUntilNextPathRecalc == 0) {
+                // optional: respect LOS setting, just like normal chase
                 final boolean canSee = sensing.hasLineOfSight(target);
 
                 if (!canSee && !this.followEvenIfNotSeen) {
@@ -170,13 +175,37 @@ public class CatoMeleeAttackGoal extends Goal {
                     this.ticksUntilNextPathRecalc = 4;
                 } else {
                     final boolean started = nav.moveTo(target, this.speedModifier);
+                    this.ticksUntilNextPathRecalc = started ? 4 : 1;
+                }
+            }
+        } else {
+            // original non-attacking chase logic (including inTriggerRange stop)
+            if (inTriggerRange) {
+                nav.stop();
+                this.ticksUntilNextPathRecalc = 4;
+            } else {
+                if (nav.isDone()) {
+                    this.ticksUntilNextPathRecalc = 0;
+                }
 
-                    if (!started) {
-                        this.ticksUntilNextPathRecalc = 1;
+                this.ticksUntilNextPathRecalc = Math.max(this.ticksUntilNextPathRecalc - 1, 0);
+
+                if (this.ticksUntilNextPathRecalc == 0) {
+                    final boolean canSee = sensing.hasLineOfSight(target);
+
+                    if (!canSee && !this.followEvenIfNotSeen) {
+                        nav.stop();
+                        this.ticksUntilNextPathRecalc = 4;
                     } else {
-                        this.ticksUntilNextPathRecalc = (distSqr > 256.0D) // 16*16
-                                ? (2 + rng.nextInt(3))
-                                : (4 + rng.nextInt(7));
+                        final boolean started = nav.moveTo(target, this.speedModifier);
+
+                        if (!started) {
+                            this.ticksUntilNextPathRecalc = 1;
+                        } else {
+                            this.ticksUntilNextPathRecalc = (distSqr > 256.0D) // 16*16
+                                    ? (2 + rng.nextInt(3))
+                                    : (4 + rng.nextInt(7));
+                        }
                     }
                 }
             }

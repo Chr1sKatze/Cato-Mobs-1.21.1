@@ -58,8 +58,8 @@ public class CatoGoalPriorityProfile {
     /** Sleep lock goal (blocks movement/AI while sleeping). */
     public int sleepLock = 2;
 
-    /** Sleep search goal (navigate to roofed spot before sleeping). */
-    public int sleepSearch = 3;
+    /** Ranged attack behavior (should be lower priority than melee attack) */
+    public int rangedAttack = 3;
 
     /** Melee attack/chase behavior. */
     public int meleeAttack = 4;
@@ -68,10 +68,13 @@ public class CatoGoalPriorityProfile {
     public int tempt = 5;
 
     /** Breeding behaviors. */
-    public int breed = 7;
+    public int breed = 6;
 
     /** Child-follow-parent behavior (baby mobs). */
-    public int followParent = 8;
+    public int followParent = 7;
+
+    /** Sleep search goal (navigate to roofed spot before sleeping). */
+    public int sleepSearch = 8;
 
     /** Rain shelter behavior (seek roof while raining). */
     public int rainShelter = 9;
@@ -122,11 +125,12 @@ public class CatoGoalPriorityProfile {
         p.floatGoal = this.floatGoal;
         p.flee = this.flee;
         p.sleepLock = this.sleepLock;
-        p.sleepSearch = this.sleepSearch;
+        p.rangedAttack = this.rangedAttack;
         p.meleeAttack = this.meleeAttack;
         p.tempt = this.tempt;
         p.breed = this.breed;
         p.followParent = this.followParent;
+        p.sleepSearch = this.sleepSearch;
         p.rainShelter = this.rainShelter;
         p.funSwim = this.funSwim;
         p.wander = this.wander;

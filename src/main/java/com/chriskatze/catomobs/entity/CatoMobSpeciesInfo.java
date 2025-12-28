@@ -95,6 +95,27 @@ public record CatoMobSpeciesInfo(
         boolean meleeSpecialChancePersistence,
 
         // ================================================================
+        // 3.2) RANGED (timed-attack system)
+        // - Delivery controls whether the attack is hitscan or projectile.
+        // - For now we’ll implement HITSCAN first; PROJECTILE comes later.
+        // ================================================================
+        boolean rangedEnabled,
+        double rangedTriggerRange,
+        int rangedCooldownTicks,
+        int rangedAnimTotalTicks,
+        int rangedFireDelayTicks,
+        double rangedDamage,
+        RangedDelivery rangedDelivery,
+
+        boolean rangedSpecialEnabled,
+        double rangedSpecialTriggerRange,
+        int rangedSpecialCooldownTicks,
+        int rangedSpecialAnimTotalTicks,
+        int rangedSpecialFireDelayTicks,
+        double rangedSpecialDamage,
+        RangedDelivery rangedSpecialDelivery,
+
+        // ================================================================
         // 4) WANDER / MOVEMENT (goal tuning)
         // ================================================================
         double wanderWalkSpeed,
@@ -230,6 +251,25 @@ public record CatoMobSpeciesInfo(
         boolean sleepSearchRequireSolidGround
 
 ) {
+
+    // ================================================================
+    // Ranged delivery type
+    // ================================================================
+    public enum RangedDelivery {
+        HITSCAN,
+        PROJECTILE
+    }
+
+    // Getter method for rangedDelivery
+    public RangedDelivery getRangedDelivery() {
+        return this.rangedDelivery;
+    }
+
+    // Optionally, you can also add a getter for rangedSpecialDelivery if needed
+    public RangedDelivery getRangedSpecialDelivery() {
+        return this.rangedSpecialDelivery;
+    }
+
     public record WaterMovementConfig(
             boolean dampingEnabled,
             double verticalDamping,

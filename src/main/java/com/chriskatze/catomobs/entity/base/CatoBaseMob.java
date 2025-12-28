@@ -15,9 +15,13 @@ import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.ai.goal.*;
 import net.minecraft.world.entity.animal.Animal;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.entity.projectile.AbstractArrow;
+import net.minecraft.world.entity.projectile.ProjectileUtil;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.item.crafting.Ingredient;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import software.bernie.geckolib.animatable.GeoEntity;
@@ -963,6 +967,9 @@ public abstract class CatoBaseMob extends Animal {
         final int moveStart;
         final int moveStop;
 
+        // NEW: ranged delivery (default hitscan for melee)
+        final CatoMobSpeciesInfo.RangedDelivery rangedDelivery;
+
         switch (id) {
             case MELEE_SPECIAL -> {
                 if (!info.meleeSpecialEnabled()) return false;
@@ -975,19 +982,69 @@ public abstract class CatoBaseMob extends Animal {
                 moveDuring   = info.meleeSpecialMoveDuringAttackAnimation();
                 moveStart    = info.meleeSpecialMoveStartDelayTicks();
                 moveStop     = info.meleeSpecialMoveStopAfterTicks();
+
+                rangedDelivery = CatoMobSpeciesInfo.RangedDelivery.HITSCAN;
             }
+
             case MELEE_NORMAL -> {
                 triggerRange = info.attackTriggerRange();
                 hitRange     = info.attackHitRange();
                 animTotal    = info.attackAnimTotalTicks();
                 hitDelay     = info.attackHitDelayTicks();
-                damage       = info.attackDamage(); // normal melee uses base attack damage
+                damage       = info.attackDamage();
                 moveDuring   = info.moveDuringAttackAnimation();
                 moveStart    = info.attackMoveStartDelayTicks();
                 moveStop     = info.attackMoveStopAfterTicks();
+
+                rangedDelivery = CatoMobSpeciesInfo.RangedDelivery.HITSCAN;
             }
+
+            // ============================================================
+            // ✅ NEW: RANGED NORMAL
+            // ============================================================
+            case RANGED_NORMAL -> {
+                if (!info.rangedEnabled()) return false;
+
+                triggerRange = info.rangedTriggerRange();
+
+                // For ranged, we treat "hit range" as the max reach for hitscan checks.
+                // We don’t have a separate rangedHitRange field, so use triggerRange.
+                hitRange     = triggerRange;
+
+                animTotal    = info.rangedAnimTotalTicks();
+                hitDelay     = info.rangedFireDelayTicks();
+                damage       = info.rangedDamage();
+
+                // Ranged attacks generally *should not* move during the fire animation by default.
+                // You can add ranged move-window fields later if you want.
+                moveDuring   = false;
+                moveStart    = 0;
+                moveStop     = 0;
+
+                rangedDelivery = info.rangedDelivery();
+            }
+
+            // ============================================================
+            // ✅ NEW: RANGED SPECIAL
+            // ============================================================
+            case RANGED_SPECIAL -> {
+                if (!info.rangedSpecialEnabled()) return false;
+
+                triggerRange = info.rangedSpecialTriggerRange();
+                hitRange     = triggerRange;
+
+                animTotal    = info.rangedSpecialAnimTotalTicks();
+                hitDelay     = info.rangedSpecialFireDelayTicks();
+                damage       = info.rangedSpecialDamage();
+
+                moveDuring   = false;
+                moveStart    = 0;
+                moveStop     = 0;
+
+                rangedDelivery = info.rangedSpecialDelivery();
+            }
+
             default -> {
-                // You haven't implemented ranged yet
                 return false;
             }
         }
@@ -1016,11 +1073,16 @@ public abstract class CatoBaseMob extends Animal {
         this.currentAttackMoveStartDelay = start;
         this.currentAttackMoveStopAfter = stop;
 
+        // NEW: store delivery so aiStep can decide “apply hitscan damage” vs “spawn projectile”
+        this.currentAttackRangedDelivery = (rangedDelivery == null)
+                ? CatoMobSpeciesInfo.RangedDelivery.HITSCAN
+                : rangedDelivery;
+
         this.queuedAttackTarget = target;
 
         int total = Math.max(1, animTotal);
         int delay = Math.max(0, hitDelay);
-        if (delay >= total) delay = total - 1; // keep hit inside anim window
+        if (delay >= total) delay = total - 1;
 
         this.attackAnimTicksRemaining = total;
         this.attackTicksUntilHit = delay;
@@ -1034,10 +1096,16 @@ public abstract class CatoBaseMob extends Animal {
 
     /** Clears all server attack timers and the queued target. */
     protected void clearAttackState() {
+        // ------------------------------------------------------------
+        // Timers / targets
+        // ------------------------------------------------------------
         this.attackTicksUntilHit = -1;
         this.attackAnimTicksRemaining = 0;
         this.queuedAttackTarget = null;
 
+        // ------------------------------------------------------------
+        // Cached attack identity + parameters
+        // ------------------------------------------------------------
         this.currentAttackId = null;
         this.setAttackIdSynced(null);
 
@@ -1047,8 +1115,18 @@ public abstract class CatoBaseMob extends Animal {
         this.currentAttackMoveStartDelay = 0;
         this.currentAttackMoveStopAfter = 0;
 
+        // Ranged delivery reset
+        this.currentAttackRangedDelivery = CatoMobSpeciesInfo.RangedDelivery.HITSCAN;
+
+        // ------------------------------------------------------------
+        // Animation / visual state
+        // ------------------------------------------------------------
         this.setAttacking(false);
         this.attackAnimAgeTicks = 0;
+
+        // ------------------------------------------------------------
+        // Hooks
+        // ------------------------------------------------------------
         this.onAttackAnimationEnd();
     }
 
@@ -1062,6 +1140,57 @@ public abstract class CatoBaseMob extends Animal {
     protected boolean currentAttackMoveDuringAnim = false;
     protected int currentAttackMoveStartDelay = 0;
     protected int currentAttackMoveStopAfter = 0;
+
+    protected CatoMobSpeciesInfo.RangedDelivery currentAttackRangedDelivery =
+            CatoMobSpeciesInfo.RangedDelivery.HITSCAN;
+
+    // ================================================================
+    // 14.1) RANGED HELPERS
+    // ================================================================
+
+    /** Hitscan delivery: just apply damage if in range + line of sight. */
+    protected void performHitscanRangedHit(LivingEntity target) {
+        if (target == null || !target.isAlive()) return;
+
+        // range gate (reuse your cached hit range)
+        if (this.distanceToSqr(target) > this.currentAttackHitRangeSqr) return;
+
+        // optional LOS gate (recommended for hitscan feel)
+        if (!this.hasLineOfSight(target)) return;
+
+        target.hurt(this.damageSources().mobAttack(this), (float) this.currentAttackDamage);
+    }
+
+    /**
+     * Projectile delivery: uses vanilla Arrow for now (no custom projectile class needed).
+     * Later you can replace this with your own projectile entity.
+     */
+    protected void spawnBasicRangedProjectile(LivingEntity target, double damage) {
+        if (target == null || !target.isAlive()) return;
+
+        Level level = this.level();
+        if (level.isClientSide) return;
+
+        // Create a valid ranged weapon (e.g., a bow)
+        ItemStack weapon = new ItemStack(Items.BOW); // Use a valid ranged weapon like a bow
+        AbstractArrow arrow = ProjectileUtil.getMobArrow(this, weapon, 1.0F, weapon);  // Pass the valid weapon
+
+        // Make it behave like an actual attack projectile
+        arrow.setOwner(this); // Set the owner (shooter)
+        arrow.setBaseDamage(Math.max(0.0D, damage)); // Set the damage
+
+        // Aim at target
+        double dx = target.getX() - this.getX();
+        double dy = target.getEyeY() - arrow.getY();
+        double dz = target.getZ() - this.getZ();
+
+        // Tune these later via species config if you want:
+        float velocity = 1.6F;     // how fast it flies
+        float inaccuracy = 0.0F;   // how “spread” it is
+
+        arrow.shoot(dx, dy, dz, velocity, inaccuracy);  // Adjust projectile velocity and inaccuracy
+        level.addFreshEntity(arrow);  // Add the arrow to the world
+    }
 
     // ================================================================
     // 14.5) MOVEMENT HOOK (shared water smoothing)
@@ -1199,8 +1328,13 @@ public abstract class CatoBaseMob extends Animal {
         // Retaliation target selection (GATED so it won't fire during flee)
         this.targetSelector.addGoal(prio.targetHurtBy, new CatoGatedHurtByTargetGoal(this));
 
-        // Melee attack goal (you should also gate canUse() inside the goal if fleeing — see note below)
+        // Melee attack goal (you should also gate canUse() inside the goal if fleeing)
         this.goalSelector.addGoal(prio.meleeAttack, new CatoMeleeAttackGoal(this, chaseSpeed, true, cooldown));
+
+        // Add Ranged Attack Goal for neutral mobs (now using timed attack system)
+        if (getSpeciesInfo().rangedEnabled()) {
+            this.goalSelector.addGoal(prio.rangedAttack, new CatoRangedAttackGoal(this));  // Now using the new goal
+        }
     }
 
     protected void setupHostileGoals() {
@@ -1212,13 +1346,15 @@ public abstract class CatoBaseMob extends Animal {
         this.targetSelector.addGoal(prio.targetHurtBy, new CatoGatedHurtByTargetGoal(this));
 
         // Nearest-player target selection (hostile-gated; later you can also gate by flee)
-        this.targetSelector.addGoal(
-                prio.targetNearestPlayer,
-                new CatoGatedNearestPlayerTargetGoal(this)
-        );
+        this.targetSelector.addGoal(prio.targetNearestPlayer, new CatoGatedNearestPlayerTargetGoal(this));
 
         // Main melee chase/attack
         this.goalSelector.addGoal(prio.meleeAttack, new CatoMeleeAttackGoal(this, chaseSpeed, false, cooldown));
+
+        // Add Ranged Attack Goal for hostile mobs (now using timed attack system)
+        if (getSpeciesInfo().rangedEnabled()) {
+            this.goalSelector.addGoal(prio.rangedAttack, new CatoRangedAttackGoal(this));  // Now using the new goal
+        }
     }
 
     // ================================================================
@@ -1696,13 +1832,25 @@ public abstract class CatoBaseMob extends Animal {
             // ---------------------------
             if (this.attackTicksUntilHit >= 0) {
                 if (this.attackTicksUntilHit == 0) {
-                    // Time to apply hit now
-                    if (this.queuedAttackTarget != null && this.queuedAttackTarget.isAlive()) {
-                        if (this.distanceToSqr(this.queuedAttackTarget) <= this.currentAttackHitRangeSqr) {
-                            this.queuedAttackTarget.hurt(
-                                    this.damageSources().mobAttack(this),
-                                    (float) this.currentAttackDamage
-                            );
+                    final LivingEntity t = this.queuedAttackTarget;
+
+                    if (t != null && t.isAlive()) {
+                        // Melee still uses the same close-range hurt logic you already had
+                        // Ranged uses delivery mode (hitscan vs projectile)
+                        if (this.currentAttackId == CatoAttackId.RANGED_NORMAL || this.currentAttackId == CatoAttackId.RANGED_SPECIAL) {
+
+                            if (this.currentAttackRangedDelivery == CatoMobSpeciesInfo.RangedDelivery.PROJECTILE) {
+                                spawnBasicRangedProjectile(t, this.currentAttackDamage);
+                            } else {
+                                // HITSCAN
+                                performHitscanRangedHit(t);
+                            }
+
+                        } else {
+                            // MELEE (your existing behavior)
+                            if (this.distanceToSqr(t) <= this.currentAttackHitRangeSqr) {
+                                t.hurt(this.damageSources().mobAttack(this), (float) this.currentAttackDamage);
+                            }
                         }
                     }
 
@@ -1712,6 +1860,7 @@ public abstract class CatoBaseMob extends Animal {
                 } else {
                     this.attackTicksUntilHit--;
                 }
+
             }
 
             // ---------------------------

@@ -105,6 +105,9 @@ public record CatoMobSpeciesInfo(
         int rangedAnimTotalTicks,
         int rangedFireDelayTicks,
         double rangedDamage,
+        boolean rangedMoveDuringAttackAnimation,
+        int rangedAttackMoveStartDelayTicks,
+        int rangedAttackMoveStopAfterTicks,
         RangedDelivery rangedDelivery,
 
         boolean rangedSpecialEnabled,
@@ -114,6 +117,9 @@ public record CatoMobSpeciesInfo(
         int rangedSpecialFireDelayTicks,
         double rangedSpecialDamage,
         RangedDelivery rangedSpecialDelivery,
+        float rangedSpecialUseChance,
+        int rangedSpecialAfterNormalHits,
+        boolean rangedSpecialChancePersistence,
 
         // ================================================================
         // 4) WANDER / MOVEMENT (goal tuning)

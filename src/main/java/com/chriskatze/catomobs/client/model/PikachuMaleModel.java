@@ -64,32 +64,21 @@ public class PikachuMaleModel extends DefaultedEntityGeoModel<PikachuMaleMob> {
                                     AnimationState<PikachuMaleMob> state) {
         super.setCustomAnimations(animatable, instanceId, state);
 
-        // ------------------------------------------------------------
-        // 1) Grab the dedicated AI head bone
-        // ------------------------------------------------------------
-        // This bone must exist in your geo.json. (Name must match exactly.)
         GeoBone headAi = this.getAnimationProcessor().getBone("head_ai");
-        if (headAi == null) return; // If the bone doesn't exist, do nothing safely.
+        if (headAi == null) return;
 
-        // ------------------------------------------------------------
-        // 2) Hard override: no additive head look while sleeping
-        // ------------------------------------------------------------
-        // This prevents the entity from rotating its head due to "look at" logic during sleep.
-        if (animatable.isSleeping()) {
+        // ✅ HARD GATE: never apply procedural head look during sleep OR attacks
+        // (prevents ranged anim “spin” issues caused by additive bone mixing / stale rotations)
+        if (animatable.isSleeping() || animatable.isAttacking()) {
             headAi.setRotX(0);
             headAi.setRotY(0);
             headAi.setRotZ(0);
             return;
         }
 
-        // ------------------------------------------------------------
-        // 3) Ask the entity for allowed head turning limits
-        // ------------------------------------------------------------
-        // Your entity overrides (getMaxHeadYRot/getMaxHeadXRot) can return 0 to disable turning.
         int maxYaw = animatable.getMaxHeadYRot();
         int maxPitch = animatable.getMaxHeadXRot();
 
-        // If both are 0, head turning is effectively disabled -> reset to neutral rotation.
         if (maxYaw == 0 && maxPitch == 0) {
             headAi.setRotX(0);
             headAi.setRotY(0);
@@ -97,25 +86,16 @@ public class PikachuMaleModel extends DefaultedEntityGeoModel<PikachuMaleMob> {
             return;
         }
 
-        // ------------------------------------------------------------
-        // 4) Read vanilla head look values (degrees) from GeckoLib tickets
-        // ------------------------------------------------------------
-        // ENTITY_MODEL_DATA contains netHeadYaw + headPitch (in degrees).
         var data = state.getData(DataTickets.ENTITY_MODEL_DATA);
 
-        // Clamp values to what this mob allows.
         float yawDeg = clamp(data.netHeadYaw(), -maxYaw, maxYaw);
         float pitchDeg = clamp(data.headPitch(), -maxPitch, maxPitch);
 
-        // ------------------------------------------------------------
-        // 5) Convert degrees -> radians and apply to the AI head bone
-        // ------------------------------------------------------------
-        // GeoBone expects radians.
         headAi.setRotY(yawDeg * ((float) Math.PI / 180F));
         headAi.setRotX(pitchDeg * ((float) Math.PI / 180F));
 
-        // NOTE:
-        // We do not touch rotZ here (roll). If you ever want tilt effects, you could add it.
+        // ✅ Always force roll to 0 to avoid any animation/blend garbage
+        headAi.setRotZ(0);
     }
 
     /**

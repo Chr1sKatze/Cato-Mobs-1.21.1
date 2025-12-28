@@ -1006,20 +1006,16 @@ public abstract class CatoBaseMob extends Animal {
                 if (!info.rangedEnabled()) return false;
 
                 triggerRange = info.rangedTriggerRange();
-
-                // For ranged, we treat "hit range" as the max reach for hitscan checks.
-                // We don’t have a separate rangedHitRange field, so use triggerRange.
                 hitRange     = triggerRange;
 
                 animTotal    = info.rangedAnimTotalTicks();
                 hitDelay     = info.rangedFireDelayTicks();
                 damage       = info.rangedDamage();
 
-                // Ranged attacks generally *should not* move during the fire animation by default.
-                // You can add ranged move-window fields later if you want.
-                moveDuring   = false;
-                moveStart    = 0;
-                moveStop     = 0;
+                // ✅ NEW: ranged movement window from species config
+                moveDuring   = info.rangedMoveDuringAttackAnimation();
+                moveStart    = info.rangedAttackMoveStartDelayTicks();
+                moveStop     = info.rangedAttackMoveStopAfterTicks();
 
                 rangedDelivery = info.rangedDelivery();
             }
@@ -1037,9 +1033,11 @@ public abstract class CatoBaseMob extends Animal {
                 hitDelay     = info.rangedSpecialFireDelayTicks();
                 damage       = info.rangedSpecialDamage();
 
-                moveDuring   = false;
-                moveStart    = 0;
-                moveStop     = 0;
+                // ✅ NEW: ranged movement window from species config
+                // (If you want special to have separate values later, we can add rangedSpecialMove* fields too)
+                moveDuring   = info.rangedMoveDuringAttackAnimation();
+                moveStart    = info.rangedAttackMoveStartDelayTicks();
+                moveStop     = info.rangedAttackMoveStopAfterTicks();
 
                 rangedDelivery = info.rangedSpecialDelivery();
             }
@@ -1234,6 +1232,23 @@ public abstract class CatoBaseMob extends Animal {
 
         // Between thresholds: keep current mode
         return rangedModeLatched;
+    }
+
+    // Helper to perform special ranged attack (either hitscan or projectile).
+    protected void performSpecialRangedAttack(LivingEntity target) {
+        if (target == null || !target.isAlive()) return;
+
+        // range gate (reuse your cached hit range)
+        if (this.distanceToSqr(target) > this.currentAttackHitRangeSqr) return;
+
+        // Perform hitscan delivery (similar to regular ranged)
+        if (this.currentAttackRangedDelivery == CatoMobSpeciesInfo.RangedDelivery.HITSCAN) {
+            performHitscanRangedHit(target);
+        }
+        // Perform projectile delivery (just like your existing method)
+        else if (this.currentAttackRangedDelivery == CatoMobSpeciesInfo.RangedDelivery.PROJECTILE) {
+            spawnBasicRangedProjectile(target, this.currentAttackDamage);  // Use the special attack damage
+        }
     }
 
     // ================================================================
@@ -1924,7 +1939,6 @@ public abstract class CatoBaseMob extends Animal {
             this.serverTickInfo = null;
         }
     }
-
 
     /**
      * Forcibly stops any running CatoGatedHurtByTargetGoal entries in targetSelector.

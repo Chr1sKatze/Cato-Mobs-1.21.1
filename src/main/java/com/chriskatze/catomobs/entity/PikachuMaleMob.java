@@ -35,7 +35,7 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
                     .identity(CatoMobMovementType.LAND, CatoMobTemperament.NEUTRAL, CatoMobSizeCategory.SMALL)
 
                     // GEMERAL SETTINGS
-                    .core(8.0D, 0.3D, 16.0D, 0.08D)
+                    .core(16.0D, 0.3D, 48.0D, 0.08D)
                     .shadow(0.4f)
                     .home(true, 96.0D)
                     .surfacePreference(-0.5D, 1.5D,1.0D,0.0D)
@@ -52,11 +52,13 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
                     .onlyUseMelee(false)
 
                     // FIGHT
-                    .combat(2.0D, 2.0D, 4.00, 70, 60,30,true,0,0)
+                    .melee(2.0D, 2.0D, 4.00, 70, 60,30,true,0,0)
                     .specialMelee(true,2.0D,4.0D,70,60,30,4.0D,true,0,0,0.50f,1,false)
-                    .chaseSpeed(1.60D)
 
-                    .ranged(true,12.0D,20,40,20,3.00, CatoMobSpeciesInfo.RangedDelivery.HITSCAN)
+                    .ranged(true,12.0D,70,60,30,2.00, true,0,0, CatoMobSpeciesInfo.RangedDelivery.HITSCAN)
+                    .specialRanged(true,14.0D,70,60,30,6.0D, CatoMobSpeciesInfo.RangedDelivery.PROJECTILE,1.0f,1,false)
+
+                    .chaseSpeed(1.60D)
 
                     // WANDERING AROUND BEHAVIOR
                     .wander(1.0D, 1.35D, 0.35F, 3.0D, 32.0D)
@@ -130,8 +132,9 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
     private static final RawAnimation IDLE   = RawAnimation.begin().thenLoop("animation.pikachu.ground_idle");
     private static final RawAnimation WALK   = RawAnimation.begin().thenLoop("animation.pikachu.ground_walk");
     private static final RawAnimation RUN    = RawAnimation.begin().thenLoop("animation.pikachu.ground_run");
-    private static final RawAnimation ATTACK = RawAnimation.begin().thenPlay("animation.pikachu.physical");
-    private static final RawAnimation ATTACK_SPECIAL = RawAnimation.begin().thenPlay("animation.pikachu.volttackle");
+    private static final RawAnimation ATTACK = RawAnimation.begin().thenPlay("animation.pikachu.melee");
+    private static final RawAnimation ATTACK_SPECIAL = RawAnimation.begin().thenPlay("animation.pikachu.melee_special");
+    private static final RawAnimation RANGED_ATTACK = RawAnimation.begin().thenPlay("animation.pikachu.ranged"); // example
     private static final RawAnimation ANGRY  = RawAnimation.begin().thenLoop("animation.pikachu.angry");
     private static final RawAnimation BATTLE_IDLE = RawAnimation.begin().thenLoop("animation.pikachu.battle_idle");
     private static final RawAnimation BLINK  = RawAnimation.begin().thenPlay("animation.pikachu.blink");
@@ -139,16 +142,24 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
     private static final RawAnimation SURFACE_SWIM = RawAnimation.begin().thenLoop("animation.pikachu.surfacewater_swim");
     private static final RawAnimation SLEEP  = RawAnimation.begin().thenLoop("animation.pikachu.sleep");
 
-    // ================================================================
-    // 4) GECKOLIB CONTROLLERS
-    // ================================================================
+// ================================================================
+// 4) GECKOLIB CONTROLLERS
+// ================================================================
 
     // Client-side visual smoothing: keep RUN playing briefly to avoid edge flicker
     private int runAnimHoldTicks = 0;
     private static final int RUN_ANIM_HOLD_TICKS = 8; // tweak 6..12
 
+    // ✅ Client-side: detect attack transitions so we can reset controller once
+    private boolean wasAttackingClient = false;
+
     private <E extends GeoEntity> PlayState movementController(AnimationState<E> state) {
         PikachuMaleMob mob = (PikachuMaleMob) state.getAnimatable();
+
+        // ✅ not attacking anymore -> clear latch (must happen on every non-attacking tick)
+        if (!mob.isAttacking()) {
+            wasAttackingClient = false;
+        }
 
         // ------------------------------------------------------------
         // Sleeping overrides everything
@@ -160,14 +171,23 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
         }
 
         // ------------------------------------------------------------
-        // Attacking (normal vs special)
+        // Attacking (normal vs special, melee vs ranged)
         // ------------------------------------------------------------
         if (mob.isAttacking()) {
             runAnimHoldTicks = 0;
+
+            // ✅ reset exactly once on attack start (prevents occasional T-pose / bad blends)
+            if (!wasAttackingClient) {
+                state.getController().forceAnimationReset();
+                wasAttackingClient = true;
+            }
+
             CatoAttackId id = mob.getCurrentAttackId();
 
             if (id == CatoAttackId.MELEE_SPECIAL) {
                 state.setAndContinue(ATTACK_SPECIAL);
+            } else if (id == CatoAttackId.RANGED_NORMAL || id == CatoAttackId.RANGED_SPECIAL) {
+                state.setAndContinue(RANGED_ATTACK);
             } else {
                 state.setAndContinue(ATTACK);
             }

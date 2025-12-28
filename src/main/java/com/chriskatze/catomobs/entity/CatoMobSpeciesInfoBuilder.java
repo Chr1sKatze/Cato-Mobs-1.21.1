@@ -116,7 +116,14 @@ public final class CatoMobSpeciesInfoBuilder {
     private int rangedSpecialFireDelayTicks = 10;
     private double rangedSpecialDamage = 2.0D;
     private CatoMobSpeciesInfo.RangedDelivery rangedSpecialDelivery = CatoMobSpeciesInfo.RangedDelivery.HITSCAN;
+    private float rangedSpecialUseChance = 0.2f;
+    private int rangedSpecialAfterNormalHits = 0;
+    private boolean rangedSpecialChancePersistence = false;
 
+
+    private boolean rangedMoveDuringAttackAnimation = false;
+    private int rangedAttackMoveStartDelayTicks = 0;
+    private int rangedAttackMoveStopAfterTicks = 0;
 
     // -----------------------------
     // 4) Wander / movement
@@ -342,7 +349,7 @@ public final class CatoMobSpeciesInfoBuilder {
         return this;
     }
 
-    public CatoMobSpeciesInfoBuilder combat(
+    public CatoMobSpeciesInfoBuilder melee(
             double damage,
             double triggerRange,
             double hitRange,
@@ -408,6 +415,9 @@ public final class CatoMobSpeciesInfoBuilder {
             int animTotalTicks,
             int fireDelayTicks,
             double damage,
+            boolean moveDuringAnim,
+            int moveStartDelayTicks,
+            int moveStopAfterTicks,
             CatoMobSpeciesInfo.RangedDelivery delivery
     ) {
         this.rangedEnabled = enabled;
@@ -416,10 +426,24 @@ public final class CatoMobSpeciesInfoBuilder {
         this.rangedAnimTotalTicks = animTotalTicks;
         this.rangedFireDelayTicks = fireDelayTicks;
         this.rangedDamage = damage;
-        this.rangedDelivery = (delivery == null ? CatoMobSpeciesInfo.RangedDelivery.HITSCAN : delivery);
+
+        this.rangedMoveDuringAttackAnimation = moveDuringAnim;
+        this.rangedAttackMoveStartDelayTicks = Math.max(0, moveStartDelayTicks);
+
+        int stop = moveStopAfterTicks;
+        if (stop > 0 && stop < this.rangedAttackMoveStartDelayTicks) {
+            stop = this.rangedAttackMoveStartDelayTicks;
+        }
+        this.rangedAttackMoveStopAfterTicks = stop;
+
+        this.rangedDelivery = (delivery == null
+                ? CatoMobSpeciesInfo.RangedDelivery.HITSCAN
+                : delivery);
+
         return this;
     }
 
+    // Fluent setters for the new special ranged attack configuration
     public CatoMobSpeciesInfoBuilder specialRanged(
             boolean enabled,
             double triggerRange,
@@ -427,7 +451,10 @@ public final class CatoMobSpeciesInfoBuilder {
             int animTotalTicks,
             int fireDelayTicks,
             double damage,
-            CatoMobSpeciesInfo.RangedDelivery delivery
+            CatoMobSpeciesInfo.RangedDelivery delivery,
+            float useChance,
+            int afterNormalHits,
+            boolean chancePersistence
     ) {
         this.rangedSpecialEnabled = enabled;
         this.rangedSpecialTriggerRange = triggerRange;
@@ -436,6 +463,9 @@ public final class CatoMobSpeciesInfoBuilder {
         this.rangedSpecialFireDelayTicks = fireDelayTicks;
         this.rangedSpecialDamage = damage;
         this.rangedSpecialDelivery = (delivery == null ? CatoMobSpeciesInfo.RangedDelivery.HITSCAN : delivery);
+        this.rangedSpecialUseChance = useChance;
+        this.rangedSpecialAfterNormalHits = afterNormalHits;
+        this.rangedSpecialChancePersistence = chancePersistence;
         return this;
     }
 
@@ -984,7 +1014,20 @@ public final class CatoMobSpeciesInfoBuilder {
         // ensure proper hysteresis ordering (back distance <= switch distance)
         if (switchBackToMelee > switchToRanged) switchBackToMelee = switchToRanged;
 
+        boolean rangedMoveDuring = this.rangedMoveDuringAttackAnimation;
 
+        int rangedMoveDelay = Math.max(0, this.rangedAttackMoveStartDelayTicks);
+        int rangedMoveStopAfter = this.rangedAttackMoveStopAfterTicks;
+        if (rangedMoveStopAfter > 0 && rangedMoveStopAfter < rangedMoveDelay) {
+            rangedMoveStopAfter = rangedMoveDelay;
+        }
+
+        // If ranged disabled, force off
+        if (!rangedEnabledSafe) {
+            rangedMoveDuring = false;
+            rangedMoveDelay = 0;
+            rangedMoveStopAfter = 0;
+        }
 
         return new CatoMobSpeciesInfo(
                 // 1) Identity
@@ -1057,6 +1100,9 @@ public final class CatoMobSpeciesInfoBuilder {
                 rangedAnimTotal,
                 rangedFireDelay,
                 rangedDmg,
+                rangedMoveDuring,
+                rangedMoveDelay,
+                rangedMoveStopAfter,
                 rangedDeliverySafe,
 
                 rangedSpecialEnabledSafe,
@@ -1066,6 +1112,9 @@ public final class CatoMobSpeciesInfoBuilder {
                 rangedSpecialFireDelay,
                 rangedSpecialDmg,
                 rangedSpecialDeliverySafe,
+                rangedSpecialUseChance,
+                rangedSpecialAfterNormalHits,
+                rangedSpecialChancePersistence,
 
                 // 4) Wander
                 Math.max(0.0D, wanderWalkSpeed),

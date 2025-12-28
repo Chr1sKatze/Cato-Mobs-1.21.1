@@ -264,6 +264,10 @@ public abstract class CatoBaseMob extends Animal {
     private static final EntityDataAccessor<Integer> DATA_ATTACK_ID =
             SynchedEntityData.defineId(CatoBaseMob.class, EntityDataSerializers.INT);
 
+    /** Synced: has a combat target (client-safe “in combat” signal). */
+    private static final EntityDataAccessor<Boolean> DATA_HAS_COMBAT_TARGET =
+            SynchedEntityData.defineId(CatoBaseMob.class, EntityDataSerializers.BOOLEAN);
+
     /** Debug overlay toggle (synced). */
     private static final EntityDataAccessor<Boolean> DATA_DEBUG_AI =
             SynchedEntityData.defineId(CatoBaseMob.class, EntityDataSerializers.BOOLEAN);
@@ -278,6 +282,7 @@ public abstract class CatoBaseMob extends Animal {
         builder.define(DATA_MOVE_MODE, MOVE_IDLE);
         builder.define(DATA_ATTACKING, false);
         builder.define(DATA_ATTACK_ID, -1);
+        builder.define(DATA_HAS_COMBAT_TARGET, false);
         builder.define(DATA_VISUALLY_ANGRY, false);
         builder.define(DATA_SLEEPING, false);
         builder.define(DATA_DEBUG_AI, false);
@@ -321,6 +326,15 @@ public abstract class CatoBaseMob extends Animal {
         if (v >= values.length) return null;
 
         return values[v];
+    }
+
+    public boolean hasCombatTarget() {
+        return this.entityData.get(DATA_HAS_COMBAT_TARGET);
+    }
+
+    protected void setHasCombatTarget(boolean hasTarget) {
+        if (hasTarget == this.entityData.get(DATA_HAS_COMBAT_TARGET)) return;
+        this.entityData.set(DATA_HAS_COMBAT_TARGET, hasTarget);
     }
 
     public boolean isVisuallyAngry() { return this.entityData.get(DATA_VISUALLY_ANGRY); }
@@ -1666,9 +1680,10 @@ public abstract class CatoBaseMob extends Animal {
 
             boolean angryNow = (this.angerTime > 0 && this.getTarget() != null);
             this.setVisuallyAngry(angryNow);
+            this.setHasCombatTarget(angryNow);
 
             // ============================================================
-            // ✅ TIMED ATTACK SYSTEM (fixed: delay==0 + proper cleanup)
+            // TIMED ATTACK SYSTEM
             // ============================================================
 
             // If we lost our target mid-attack, cancel cleanly
@@ -1677,7 +1692,7 @@ public abstract class CatoBaseMob extends Animal {
             }
 
             // ---------------------------
-            // Timed hit (supports delay==0)
+            // Timed hit
             // ---------------------------
             if (this.attackTicksUntilHit >= 0) {
                 if (this.attackTicksUntilHit == 0) {

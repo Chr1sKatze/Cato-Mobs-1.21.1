@@ -47,8 +47,8 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
                     .groupFleeAllies(false, Set.of(CMEntities.PIKACHU_MALE.get())) // true(, null) = all catomobs are allies
 
                     // FIGHT
-                    .combat(2.0D, 2.0D, 4.00, 70, 60,30,true,0,0)
-                    .specialMelee(true,2.0D,4.0D,70,60,30,4.0D,true,0,0,0.50f,1,false)
+                    .combat(2.0D, 2.0D, 4.00, 120, 60,30,true,0,0)
+                    .specialMelee(true,2.0D,4.0D,120,60,30,4.0D,true,0,0,0.50f,1,false)
                     .chaseSpeed(1.60D)
 
                     // WANDERING AROUND BEHAVIOR
@@ -126,6 +126,7 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
     private static final RawAnimation ATTACK = RawAnimation.begin().thenPlay("animation.pikachu.physical");
     private static final RawAnimation ATTACK_SPECIAL = RawAnimation.begin().thenPlay("animation.pikachu.volttackle");
     private static final RawAnimation ANGRY  = RawAnimation.begin().thenLoop("animation.pikachu.angry");
+    private static final RawAnimation BATTLE_IDLE = RawAnimation.begin().thenLoop("animation.pikachu.battle_idle");
     private static final RawAnimation BLINK  = RawAnimation.begin().thenPlay("animation.pikachu.blink");
     private static final RawAnimation SURFACE_IDLE = RawAnimation.begin().thenLoop("animation.pikachu.surfacewater_idle");
     private static final RawAnimation SURFACE_SWIM = RawAnimation.begin().thenLoop("animation.pikachu.surfacewater_swim");
@@ -135,19 +136,31 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
     // 4) GECKOLIB CONTROLLERS
     // ================================================================
 
+    // Client-side visual smoothing: keep RUN playing briefly to avoid edge flicker
+    private int runAnimHoldTicks = 0;
+    private static final int RUN_ANIM_HOLD_TICKS = 8; // tweak 6..12
+
     private <E extends GeoEntity> PlayState movementController(AnimationState<E> state) {
         PikachuMaleMob mob = (PikachuMaleMob) state.getAnimatable();
 
+        // ------------------------------------------------------------
+        // Sleeping overrides everything
+        // ------------------------------------------------------------
         if (mob.isSleeping()) {
+            runAnimHoldTicks = 0;
             state.setAndContinue(SLEEP);
             return PlayState.CONTINUE;
         }
 
+        // ------------------------------------------------------------
+        // Attacking (normal vs special)
+        // ------------------------------------------------------------
         if (mob.isAttacking()) {
+            runAnimHoldTicks = 0;
             CatoAttackId id = mob.getCurrentAttackId();
 
             if (id == CatoAttackId.MELEE_SPECIAL) {
-                state.setAndContinue(ATTACK_SPECIAL); // new RawAnimation
+                state.setAndContinue(ATTACK_SPECIAL);
             } else {
                 state.setAndContinue(ATTACK);
             }
@@ -155,15 +168,44 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
             return PlayState.CONTINUE;
         }
 
+        // ------------------------------------------------------------
+        // Water movement
+        // ------------------------------------------------------------
         if (mob.isInWater()) {
+            runAnimHoldTicks = 0;
             state.setAndContinue(state.isMoving() ? SURFACE_SWIM : SURFACE_IDLE);
             return PlayState.CONTINUE;
         }
 
+        // ------------------------------------------------------------
+        // Ground movement / idle
+        // ------------------------------------------------------------
         if (state.isMoving()) {
-            state.setAndContinue(mob.getMoveMode() == MOVE_RUN ? RUN : WALK);
+
+            // If we are truly in RUN mode, refresh the hold timer.
+            if (mob.getMoveMode() == MOVE_RUN) {
+                runAnimHoldTicks = RUN_ANIM_HOLD_TICKS;
+                state.setAndContinue(RUN);
+            } else {
+                // Not in RUN mode (probably WALK), but if we *recently* were running,
+                // keep RUN for a few ticks to avoid "almost-run" blending jitter.
+                if (runAnimHoldTicks > 0) {
+                    runAnimHoldTicks--;
+                    state.setAndContinue(RUN);
+                } else {
+                    state.setAndContinue(WALK);
+                }
+            }
+
         } else {
-            state.setAndContinue(IDLE);
+            // Not moving → clear hold so next run starts clean
+            runAnimHoldTicks = 0;
+
+            state.setAndContinue(
+                    (mob.isVisuallyAngry() && mob.hasCombatTarget())
+                            ? BATTLE_IDLE
+                            : IDLE
+            );
         }
 
         return PlayState.CONTINUE;
@@ -171,7 +213,7 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
 
     @Override
     public void registerControllers(AnimatableManager.ControllerRegistrar controllers) {
-        controllers.add(new AnimationController<>(this, "main", 5, this::movementController));
+        controllers.add(new AnimationController<>(this, "main", 3, this::movementController));
         controllers.add(new AnimationController<>(this, "angry", 0, s -> this.overlayController(s, this.isVisuallyAngry(), ANGRY)));
         controllers.add(new AnimationController<>(this, "blink", 0, s -> this.blinkController(s, BLINK)));
     }

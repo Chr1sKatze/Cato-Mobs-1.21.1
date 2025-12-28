@@ -248,26 +248,35 @@ public record CatoMobSpeciesInfo(
         double sleepSearchRadiusMultiplier,
         double sleepSearchMinDistance,
         boolean sleepSearchRespectHomeRadius,
-        boolean sleepSearchRequireSolidGround
+        boolean sleepSearchRequireSolidGround,
 
+        // ================================================================
+        // 11) ATTACK BEHAVIOUR
+        // ================================================================
+        boolean onlyUseRanged,
+        boolean onlyUseMelee,
+        boolean rangedUnlessClose,
+        double rangedSwitchToDistance,
+        double meleeSwitchBackDistance
 ) {
-
-    // ================================================================
-    // Ranged delivery type
-    // ================================================================
-    public enum RangedDelivery {
-        HITSCAN,
-        PROJECTILE
+    public boolean isOnlyUseRanged() {
+        return onlyUseRanged;
     }
 
-    // Getter method for rangedDelivery
-    public RangedDelivery getRangedDelivery() {
-        return this.rangedDelivery;
+    public boolean isOnlyUseMelee() {
+        return onlyUseMelee;
     }
 
-    // Optionally, you can also add a getter for rangedSpecialDelivery if needed
-    public RangedDelivery getRangedSpecialDelivery() {
-        return this.rangedSpecialDelivery;
+    public boolean isRangedUnlessClose() {
+        return rangedUnlessClose;
+    }
+
+    public double rangedSwitchToDistance() {
+        return rangedSwitchToDistance;
+    }
+
+    public double meleeSwitchBackDistance() {
+        return meleeSwitchBackDistance;
     }
 
     public record WaterMovementConfig(
@@ -306,5 +315,11 @@ public record CatoMobSpeciesInfo(
         public static SurfacePreferenceConfig waterLover() {
             return new SurfacePreferenceConfig(1.0D, 0.2D, 0.0D, 0.0D);
         }
+    }
+
+    // The RangedDelivery Enum
+    public enum RangedDelivery {
+        HITSCAN,
+        PROJECTILE
     }
 }

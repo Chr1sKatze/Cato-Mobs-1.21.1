@@ -179,7 +179,7 @@ public final class CatoMobSpeciesInfoBuilder {
 
     private int rainShelterLingerAfterRainTicks = 0;
 
-    // ✅ Peek (human-tunable)
+    // Peek
     private int rainShelterPeekAvgIntervalTicks = 0; // 0 = disabled
     private int rainShelterPeekMinTicks = 0;
     private int rainShelterPeekMaxTicks = 0;
@@ -187,7 +187,7 @@ public final class CatoMobSpeciesInfoBuilder {
     private double rainShelterPeekDistanceMaxBlocks = 6.0D;
     private int rainShelterPeekSearchAttempts = 16;
 
-    // ✅ Roof-wander pacing under shelter (cleaner API — no radius fields)
+    // Roof-wander pacing under shelter (cleaner API — no radius fields)
     private boolean rainShelterShuffleEnabled = false;
     private int rainShelterShuffleIntervalMinTicks = 20 * 2;
     private int rainShelterShuffleIntervalMaxTicks = 20 * 4;
@@ -254,6 +254,15 @@ public final class CatoMobSpeciesInfoBuilder {
     private double sleepSearchMinDistance = 2.0D;
     private boolean sleepSearchRespectHomeRadius = true;
     private boolean sleepSearchRequireSolidGround = true;
+
+    // -----------------------------
+    // 11) Attack Behaviour
+    // -----------------------------
+    private boolean onlyUseRanged = false;
+    private boolean onlyUseMelee = false;
+    private boolean rangedUnlessClose = false;
+    private double rangedSwitchToDistance = 10.0D;
+    private double meleeSwitchBackDistance = 6.0D;
 
     private CatoMobSpeciesInfoBuilder() {}
 
@@ -435,6 +444,23 @@ public final class CatoMobSpeciesInfoBuilder {
         return this;
     }
 
+    public CatoMobSpeciesInfoBuilder onlyUseRanged(boolean enabled) {
+        this.onlyUseRanged = enabled;
+        return this;
+    }
+
+    public CatoMobSpeciesInfoBuilder onlyUseMelee(boolean enabled) {
+        this.onlyUseMelee = enabled;
+        return this;
+    }
+
+    public CatoMobSpeciesInfoBuilder rangedUnlessClose(boolean enabled, double switchToRangedDist, double switchBackToMeleeDist) {
+        this.rangedUnlessClose = enabled;
+        this.rangedSwitchToDistance = Math.max(0.0D, switchToRangedDist);
+        this.meleeSwitchBackDistance = Math.max(0.0D, switchBackToMeleeDist);
+        return this;
+    }
+
     public CatoMobSpeciesInfoBuilder wander(double walkSpeed, double runSpeed, float runChance,
                                             double minRadius, double maxRadius) {
         this.wanderWalkSpeed = walkSpeed;
@@ -445,12 +471,6 @@ public final class CatoMobSpeciesInfoBuilder {
         return this;
     }
 
-    /**
-     * ✅ NEW: Wander attempt pacing (interval + chance), just like sleepAttempts().
-     *
-     * intervalTicks: how often we "consider" wandering
-     * chance: chance to actually start wandering when that interval triggers
-     */
     public CatoMobSpeciesInfoBuilder wanderAttempts(int intervalTicks, float chance) {
         this.wanderAttemptIntervalTicks = intervalTicks;
         this.wanderAttemptChance = chance;
@@ -958,6 +978,12 @@ public final class CatoMobSpeciesInfoBuilder {
             rangedSpecialDeliverySafe = CatoMobSpeciesInfo.RangedDelivery.HITSCAN;
         }
 
+        double switchToRanged = Math.max(0.0D, this.rangedSwitchToDistance);
+        double switchBackToMelee = Math.max(0.0D, this.meleeSwitchBackDistance);
+
+        // ensure proper hysteresis ordering (back distance <= switch distance)
+        if (switchBackToMelee > switchToRanged) switchBackToMelee = switchToRanged;
+
 
 
         return new CatoMobSpeciesInfo(
@@ -1040,7 +1066,6 @@ public final class CatoMobSpeciesInfoBuilder {
                 rangedSpecialFireDelay,
                 rangedSpecialDmg,
                 rangedSpecialDeliverySafe,
-
 
                 // 4) Wander
                 Math.max(0.0D, wanderWalkSpeed),
@@ -1144,7 +1169,14 @@ public final class CatoMobSpeciesInfoBuilder {
                 sleepSearchRadiusMultiplier,
                 sleepSearchMinDistance,
                 sleepSearchRespectHomeRadius,
-                sleepSearchRequireSolidGround
+                sleepSearchRequireSolidGround,
+
+                // 11) Combat Style
+                onlyUseRanged,
+                onlyUseMelee,
+                rangedUnlessClose,
+                switchToRanged,
+                switchBackToMelee
         );
     }
 

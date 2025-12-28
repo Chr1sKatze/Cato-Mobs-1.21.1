@@ -59,6 +59,15 @@ public class CatoMeleeAttackGoal extends Goal {
         if (isInvalidPlayerTarget(target)) return false;
 
         if (!canAttackNow()) return false;
+        final CatoMobSpeciesInfo info = this.mob.infoServer();
+
+        // combat-style gate
+        if (info.onlyUseRanged()) return false;
+
+        // If rangedUnlessClose enabled and target is far enough to prefer ranged => stop melee goal
+        if (!info.onlyUseMelee() && info.rangedUnlessClose()) {
+            if (this.mob.shouldUseRangedAgainst(target)) return false;
+        }
 
         final var targetPos = target.blockPosition();
         return this.mob.isWithinRestriction(targetPos);
@@ -71,6 +80,15 @@ public class CatoMeleeAttackGoal extends Goal {
         if (isInvalidPlayerTarget(target)) return false;
 
         if (!canAttackNow()) return false;
+        final CatoMobSpeciesInfo info = this.mob.infoServer();
+
+        // combat-style gate
+        if (info.onlyUseRanged()) return false;
+
+        // If rangedUnlessClose enabled and target is far enough to prefer ranged => stop melee goal
+        if (!info.onlyUseMelee() && info.rangedUnlessClose()) {
+            if (this.mob.shouldUseRangedAgainst(target)) return false;
+        }
 
         final var targetPos = target.blockPosition();
         return this.mob.isWithinRestriction(targetPos);

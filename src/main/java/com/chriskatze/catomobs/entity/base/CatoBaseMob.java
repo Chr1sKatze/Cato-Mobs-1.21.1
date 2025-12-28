@@ -1192,6 +1192,50 @@ public abstract class CatoBaseMob extends Animal {
         level.addFreshEntity(arrow);  // Add the arrow to the world
     }
 
+    // Combat style latch (server-side). Only used when rangedUnlessClose is enabled.
+    private boolean rangedModeLatched = false;
+
+    public boolean shouldUseRangedAgainst(LivingEntity target) {
+        if (target == null) return false;
+
+        final CatoMobSpeciesInfo info = infoServer();
+
+        if (info.onlyUseMelee()) return false;
+        if (info.onlyUseRanged()) return true;
+
+        if (!info.rangedUnlessClose()) return false;
+
+        double far = Math.max(0.0D, info.rangedSwitchToDistance());
+        double near = Math.max(0.0D, info.meleeSwitchBackDistance());
+
+        // Safety: if misconfigured (near > far), clamp near to far
+        if (far > 0.0D && near > far) near = far;
+
+        double distSqr = this.distanceToSqr(target);
+
+        // If near/far are disabled, behave like "don't force ranged"
+        if (far <= 0.0D && near <= 0.0D) return false;
+
+        double farSqr = far * far;
+        double nearSqr = near * near;
+
+        // --- LATCHED HYSTERESIS ---
+        // Switch OFF ranged when close enough
+        if (near > 0.0D && distSqr <= nearSqr) {
+            rangedModeLatched = false;
+            return false;
+        }
+
+        // Switch ON ranged when far enough
+        if (far > 0.0D && distSqr >= farSqr) {
+            rangedModeLatched = true;
+            return true;
+        }
+
+        // Between thresholds: keep current mode
+        return rangedModeLatched;
+    }
+
     // ================================================================
     // 14.5) MOVEMENT HOOK (shared water smoothing)
     // ================================================================
@@ -1738,7 +1782,6 @@ public abstract class CatoBaseMob extends Animal {
         if (!this.level().isClientSide && !surfaceMalusApplied) {
             applySurfacePathfindingBiasOnce();
         }
-
         super.aiStep();
 
         if (this.level().isClientSide) {
@@ -1749,7 +1792,7 @@ public abstract class CatoBaseMob extends Animal {
         // start cache (server-only)
         this.serverTickNow = this.level().getGameTime();
         this.serverTickPos = this.blockPosition();
-        this.serverTickInfo = getSpeciesInfo();     // cache once
+        this.serverTickInfo = getSpeciesInfo(); // cache once
         this.serverTickCacheValid = true;
 
         try {
@@ -1760,7 +1803,6 @@ public abstract class CatoBaseMob extends Animal {
             tickSleepSpotBlacklistDecayServer();
 
             if (sleepDesireTicks > 0) sleepDesireTicks--;
-
             if (this.homePos == null && info.stayWithinHomeRadius()) {
                 this.homePos = pos;
             }
@@ -1782,17 +1824,14 @@ public abstract class CatoBaseMob extends Animal {
             if (fleeTicksRemaining > 0) {
                 fleeTicksRemaining--;
                 this.setMoveMode(this.getNavigation().isInProgress() ? MOVE_RUN : MOVE_IDLE);
-
                 if (fleeTicksRemaining <= 0) {
                     fleeCooldownUntil = now + Math.max(0, info.fleeCooldownTicks());
                     fleeThreat = null;
-
                     this.angerTime = 0;
                     this.setTarget(null);
                     this.setAggressive(false);
                     this.setLastHurtByMob(null);
                     clearAttackState();
-
                     this.getNavigation().stop();
                     this.setMoveMode(MOVE_IDLE);
                 }
@@ -1805,10 +1844,8 @@ public abstract class CatoBaseMob extends Animal {
                     this.setTarget(null);
                     this.setAggressive(false);
                     this.setLastHurtByMob(null);
-
                     this.getNavigation().stop();
                     this.setMoveMode(MOVE_IDLE);
-
                     clearAttackState();
                     stopHurtByGoalsSafe();
                 }
@@ -1821,7 +1858,6 @@ public abstract class CatoBaseMob extends Animal {
             // ============================================================
             // TIMED ATTACK SYSTEM
             // ============================================================
-
             // If we lost our target mid-attack, cancel cleanly
             if (this.getTarget() == null && (this.attackTicksUntilHit >= 0 || this.attackAnimTicksRemaining > 0)) {
                 clearAttackState();
@@ -1833,34 +1869,27 @@ public abstract class CatoBaseMob extends Animal {
             if (this.attackTicksUntilHit >= 0) {
                 if (this.attackTicksUntilHit == 0) {
                     final LivingEntity t = this.queuedAttackTarget;
-
                     if (t != null && t.isAlive()) {
                         // Melee still uses the same close-range hurt logic you already had
                         // Ranged uses delivery mode (hitscan vs projectile)
                         if (this.currentAttackId == CatoAttackId.RANGED_NORMAL || this.currentAttackId == CatoAttackId.RANGED_SPECIAL) {
-
                             if (this.currentAttackRangedDelivery == CatoMobSpeciesInfo.RangedDelivery.PROJECTILE) {
                                 spawnBasicRangedProjectile(t, this.currentAttackDamage);
                             } else {
-                                // HITSCAN
                                 performHitscanRangedHit(t);
                             }
-
-                        } else {
-                            // MELEE (your existing behavior)
+                        } else { // MELEE (your existing behavior)
                             if (this.distanceToSqr(t) <= this.currentAttackHitRangeSqr) {
                                 t.hurt(this.damageSources().mobAttack(this), (float) this.currentAttackDamage);
                             }
                         }
                     }
-
                     // consume hit
                     this.queuedAttackTarget = null;
                     this.attackTicksUntilHit = -1;
                 } else {
                     this.attackTicksUntilHit--;
                 }
-
             }
 
             // ---------------------------
@@ -1869,7 +1898,6 @@ public abstract class CatoBaseMob extends Animal {
             if (this.attackAnimTicksRemaining > 0) {
                 this.attackAnimTicksRemaining--;
                 this.attackAnimAgeTicks++;
-
                 if (this.attackAnimTicksRemaining == 0) {
                     // IMPORTANT: clears synced attack id + cached params + attacking flag
                     clearAttackState();
@@ -1890,11 +1918,13 @@ public abstract class CatoBaseMob extends Animal {
             }
 
             tickAiDebugServer();
+
         } finally {
             this.serverTickCacheValid = false;
             this.serverTickInfo = null;
         }
     }
+
 
     /**
      * Forcibly stops any running CatoGatedHurtByTargetGoal entries in targetSelector.

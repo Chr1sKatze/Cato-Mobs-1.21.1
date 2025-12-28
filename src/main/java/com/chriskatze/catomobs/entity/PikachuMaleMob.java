@@ -46,12 +46,17 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
                     .groupFlee(true,12.0D,10,false)
                     .groupFleeAllies(false, Set.of(CMEntities.PIKACHU_MALE.get())) // true(, null) = all catomobs are allies
 
+                    // COMBAT STYLE
+                    .onlyUseRanged(true)
+                    .rangedUnlessClose(false,10.0D,6.0D)
+                    .onlyUseMelee(false)
+
                     // FIGHT
-                    .combat(2.0D, 2.0D, 4.00, 120, 60,30,true,0,0)
-                    .specialMelee(true,2.0D,4.0D,120,60,30,4.0D,true,0,0,0.50f,1,false)
+                    .combat(2.0D, 2.0D, 4.00, 70, 60,30,true,0,0)
+                    .specialMelee(true,2.0D,4.0D,70,60,30,4.0D,true,0,0,0.50f,1,false)
                     .chaseSpeed(1.60D)
 
-                    .ranged(true,12.0D,60,40,20,3.00, CatoMobSpeciesInfo.RangedDelivery.HITSCAN)
+                    .ranged(true,12.0D,20,40,20,3.00, CatoMobSpeciesInfo.RangedDelivery.HITSCAN)
 
                     // WANDERING AROUND BEHAVIOR
                     .wander(1.0D, 1.35D, 0.35F, 3.0D, 32.0D)

@@ -49,7 +49,7 @@ public record CatoMobSpeciesInfo(
         double fleeDesiredDistance,
 
         // ================================================================
-        // 2.7) GROUP FLEE (panic spread)
+        // 2.7) GROUP FLEE
         // ================================================================
         boolean groupFleeEnabled,
         double groupFleeRadius,
@@ -96,8 +96,6 @@ public record CatoMobSpeciesInfo(
 
         // ================================================================
         // 3.2) RANGED (timed-attack system)
-        // - Delivery controls whether the attack is hitscan or projectile.
-        // - For now we’ll implement HITSCAN first; PROJECTILE comes later.
         // ================================================================
         boolean rangedEnabled,
         double rangedTriggerRange,
@@ -130,7 +128,6 @@ public record CatoMobSpeciesInfo(
         double wanderMinRadius,
         double wanderMaxRadius,
 
-        // wander attempt pacing (like sleep pacing)
         int wanderAttemptIntervalTicks,
         float wanderAttemptChance,
 
@@ -167,23 +164,18 @@ public record CatoMobSpeciesInfo(
         // ================================================================
         boolean rainShelterEnabled,
 
-        // decision pacing
         int rainShelterAttemptIntervalTicks,
         float rainShelterAttemptChance,
 
-        // search behavior
         double rainShelterSearchRadiusBlocks,
         int rainShelterSearchAttempts,
         int rainShelterRoofScanMaxBlocks,
 
-        // movement speeds while sheltering
         double rainShelterRunToShelterSpeed,
         double rainShelterWalkSpeed,
 
-        // after rain stops
         int rainShelterLingerAfterRainTicks,
 
-        // "peek" behavior
         int rainShelterPeekAvgIntervalTicks,
         int rainShelterPeekMinTicks,
         int rainShelterPeekMaxTicks,
@@ -191,7 +183,6 @@ public record CatoMobSpeciesInfo(
         double rainShelterPeekDistanceMaxBlocks,
         int rainShelterPeekSearchAttempts,
 
-        // roof-wander pacing under shelter (cleaner API: no radius params here)
         boolean rainShelterShuffleEnabled,
         int rainShelterShuffleIntervalMinTicks,
         int rainShelterShuffleIntervalMaxTicks,
@@ -264,7 +255,11 @@ public record CatoMobSpeciesInfo(
         boolean rangedUnlessClose,
         double rangedSwitchToDistance,
         double meleeSwitchBackDistance
-) {
+)
+{
+    // ================================================================
+    // GETTER METHODS
+    // ================================================================
     public boolean isOnlyUseRanged() {
         return onlyUseRanged;
     }
@@ -285,6 +280,9 @@ public record CatoMobSpeciesInfo(
         return meleeSwitchBackDistance;
     }
 
+    // ================================================================
+    // CONFIGS
+    // ================================================================
     public record WaterMovementConfig(
             boolean dampingEnabled,
             double verticalDamping,
@@ -323,7 +321,9 @@ public record CatoMobSpeciesInfo(
         }
     }
 
-    // The RangedDelivery Enum
+    // ================================================================
+    // ENUMS
+    // ================================================================
     public enum RangedDelivery {
         HITSCAN,
         PROJECTILE

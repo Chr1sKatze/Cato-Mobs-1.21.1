@@ -6,11 +6,6 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 
-/**
- * CatoMobSpeciesInfoBuilder
- *
- * Fluent builder for CatoMobSpeciesInfo so you never have to count constructor args again.
- */
 public final class CatoMobSpeciesInfoBuilder {
 
     // -----------------------------

@@ -12,61 +12,61 @@ import software.bernie.geckolib.animatable.instance.AnimatableInstanceCache;
 import software.bernie.geckolib.animatable.instance.SingletonAnimatableInstanceCache;
 import software.bernie.geckolib.animation.*;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
 
 /**
- * PikachuMaleMob
- *
- * Concrete mob implementation using CatoBaseMob + GeckoLib.
- *
- * This class is intentionally:
- * - declarative (species config)
- * - cosmetic / animation-focused
- * - light on AI logic (handled by base + goals)
+ * defines the behavior, animation, and interactions for this mob.
  */
+
 public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
 
     // ================================================================
     // 1) SPECIES CONFIGURATION
     // ================================================================
+    @Override
+    public CatoMobSpeciesInfo getSpeciesInfo() {
+        return SPECIES_INFO;
+    }
 
     public static final CatoMobSpeciesInfo SPECIES_INFO =
             CatoMobSpeciesInfoBuilder.create()
                     .identity(CatoMobMovementType.LAND, CatoMobTemperament.NEUTRAL, CatoMobSizeCategory.SMALL)
 
-                    // GEMERAL SETTINGS
+                    // GENERAL SETTINGS
                     .core(16.0D, 0.3D, 48.0D, 0.08D)
                     .shadow(0.4f)
                     .home(true, 96.0D)
-                    .surfacePreference(-0.5D, 1.5D,1.0D,0.0D)
+                    .surfacePreference(-0.5D, 1.5D, 1.0D, 0.0D)
 
                     // COMBAT BEHAVIOR
-                    .retaliation(true,20 * 30)
+                    .retaliation(true, 20 * 30)
                     .flee(false, true, 4.0F, false, 20 * 30, 20 * 10, 1.35D, 20.0D)
-                    .groupFlee(true,12.0D,10,false)
+                    .groupFlee(true, 12.0D, 10, false)
                     .groupFleeAllies(false, Set.of(CMEntities.PIKACHU_MALE.get())) // true(, null) = all catomobs are allies
 
                     // COMBAT STYLE
                     .onlyUseRanged(false)
-                    .rangedUnlessClose(true,10.0D,6.0D)
+                    .rangedUnlessClose(true, 10.0D, 6.0D)
                     .onlyUseMelee(false)
 
                     // FIGHT
-                    .melee(1.0D, 2.0D, 4.00, 70, 60,30,true,0,0)
-                    .specialMelee(true,2.0D,4.0D,70,60,30,2.0D,true,0,0,1.0f,1,false)
+                    .melee(1.0D, 2.0D, 4.00, 70, 60, 30, true, 0, 0)
+                    .specialMelee(true, 2.0D, 4.0D, 70, 60, 30, 2.0D, true, 0, 0, 1.0f, 1, false)
 
-                    .ranged(true,12.0D,70,60,30,1.00, true,0,0, CatoMobSpeciesInfo.RangedDelivery.HITSCAN)
-                    .specialRanged(true,14.0D,70,60,30,2.0D, CatoMobSpeciesInfo.RangedDelivery.PROJECTILE,1.0f,2,false)
+                    .ranged(true, 12.0D, 70, 60, 30, 1.00, true, 0, 0, CatoMobSpeciesInfo.RangedDelivery.HITSCAN)
+                    .specialRanged(true, 14.0D, 70, 60, 30, 2.0D, CatoMobSpeciesInfo.RangedDelivery.PROJECTILE, 1.0f, 2, false)
 
                     .chaseSpeed(1.0D)
 
                     // WANDERING AROUND BEHAVIOR
                     .wander(1.0D, 1.35D, 0.35F, 3.0D, 32.0D)
-                    .wanderAttempts(100,0.75f)
+                    .wanderAttempts(100, 0.75f)
                     .wanderRunDistanceThreshold(10.0D)
 
                     // SWIMMING FOR FUN
-                    .funSwim(true,true, true,20*30,1.0f,20*10,12.0D,24)
+                    .funSwim(true, true, true, 20 * 30, 1.0f, 20 * 10, 12.0D, 24)
 
                     // WATER BEHAVIOR
                     .waterSwimSpeedMultiplier(2.2D)
@@ -81,186 +81,112 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
                     .sleepMemory(2, 2)
                     .sleepConstraints(true, false)
                     .wakeRules(true, true, true, true, true)
-                    .sleepBuddies(true, 48.0D, 4, 2, 25, true,
+                    .sleepBuddies(true, 32.0D, 4, 2, 25, true,
                             Set.of(CMEntities.PIKACHU_MALE.get()))
 
                     // SLEEP SPOT SEARCHING
                     .sleepSearch(3, 3, 1, 12, 20 * 15, 20 * 3, 24.0D, 0.0D, true, true)
 
                     // SEEK SHELTER FROM RAIN
-                    .rainShelter(true, 20 * 2, 1.0f, 24.0D, 46, 12, 1.35D, 1.00D, 20 * 5)
+                    .rainShelter(true, 20 * 2, 1.0f, 32.0D, 3, 16, 1.35D, 1.00D, 20 * 5)
                     .rainShelterPeek(20 * 20, 20 * 3, 20 * 5, 2.0D, 6.0D, 16)
                     .rainShelterShuffle(true, 20 * 30, 20 * 50, 16)
 
                     .build();
 
-    @Override
-    public CatoMobSpeciesInfo getSpeciesInfo() {
-        return SPECIES_INFO;
-    }
-
     // ================================================================
     // 2) HEAD ROTATION LIMITS (USED BY MODEL + LOOK CONTROL)
     // ================================================================
-
-    public static final boolean HEAD_TURN_WHILE_RUNNING = true;
-    public static final boolean HEAD_TURN_WHILE_ATTACKING = true;
-
-    public static final int BASE_MAX_HEAD_PITCH = 20;
-    public static final int BASE_MAX_HEAD_YAW = 30;
+    private static final HeadRotationConfig HEAD_ROTATION_CONFIG = new HeadRotationConfig(20, 30, true, true);
 
     @Override
     public int getMaxHeadXRot() {
-        if (this.isSleeping()) return 0;
-        if (isAttacking() && !HEAD_TURN_WHILE_ATTACKING) return 0;
-        if (this.getMoveMode() == MOVE_RUN && !HEAD_TURN_WHILE_RUNNING) return 0;
-        return BASE_MAX_HEAD_PITCH;
+        return HEAD_ROTATION_CONFIG.getMaxHeadXRot(this.isSleeping(), this.isAttacking(), this.getMoveMode() == MOVE_RUN);
     }
 
     @Override
     public int getMaxHeadYRot() {
-        if (this.isSleeping()) return 0;
-        if (isAttacking() && !HEAD_TURN_WHILE_ATTACKING) return 0;
-        if (this.getMoveMode() == MOVE_RUN && !HEAD_TURN_WHILE_RUNNING) return 0;
-        return BASE_MAX_HEAD_YAW;
+        return HEAD_ROTATION_CONFIG.getMaxHeadYRot(this.isSleeping(), this.isAttacking(), this.getMoveMode() == MOVE_RUN);
     }
 
     // ================================================================
     // 3) GECKOLIB ANIMATION DEFINITIONS
     // ================================================================
+    private static final Map<String, RawAnimation> ANIMATIONS = new HashMap<>();
 
-    private static final RawAnimation IDLE   = RawAnimation.begin().thenLoop("animation.pikachu.ground_idle");
-    private static final RawAnimation WALK   = RawAnimation.begin().thenLoop("animation.pikachu.ground_walk");
-    private static final RawAnimation RUN    = RawAnimation.begin().thenLoop("animation.pikachu.ground_run");
-    private static final RawAnimation ATTACK = RawAnimation.begin().thenPlay("animation.pikachu.melee");
-    private static final RawAnimation ATTACK_SPECIAL = RawAnimation.begin().thenPlay("animation.pikachu.melee_special");
-    private static final RawAnimation RANGED_ATTACK = RawAnimation.begin().thenPlay("animation.pikachu.ranged"); // example
-    private static final RawAnimation ANGRY  = RawAnimation.begin().thenLoop("animation.pikachu.angry");
-    private static final RawAnimation BATTLE_IDLE = RawAnimation.begin().thenLoop("animation.pikachu.battle_idle");
-    private static final RawAnimation BLINK  = RawAnimation.begin().thenPlay("animation.pikachu.blink");
-    private static final RawAnimation SURFACE_IDLE = RawAnimation.begin().thenLoop("animation.pikachu.surfacewater_idle");
-    private static final RawAnimation SURFACE_SWIM = RawAnimation.begin().thenLoop("animation.pikachu.surfacewater_swim");
-    private static final RawAnimation SLEEP  = RawAnimation.begin().thenLoop("animation.pikachu.sleep");
-
-// ================================================================
-// 4) GECKOLIB CONTROLLERS
-// ================================================================
-
-    // Client-side visual smoothing: keep RUN playing briefly to avoid edge flicker
-    private int runAnimHoldTicks = 0;
-    private static final int RUN_ANIM_HOLD_TICKS = 8; // tweak 6..12
-
-    // ✅ Client-side: detect attack transitions so we can reset controller once
-    private boolean wasAttackingClient = false;
-
-    private <E extends GeoEntity> PlayState movementController(AnimationState<E> state) {
-        PikachuMaleMob mob = (PikachuMaleMob) state.getAnimatable();
-
-        // ✅ not attacking anymore -> clear latch (must happen on every non-attacking tick)
-        if (!mob.isAttacking()) {
-            wasAttackingClient = false;
-        }
-
-        // ------------------------------------------------------------
-        // Sleeping overrides everything
-        // ------------------------------------------------------------
-        if (mob.isSleeping()) {
-            runAnimHoldTicks = 0;
-            state.setAndContinue(SLEEP);
-            return PlayState.CONTINUE;
-        }
-
-        // ------------------------------------------------------------
-        // Attacking (normal vs special, melee vs ranged)
-        // ------------------------------------------------------------
-        if (mob.isAttacking()) {
-            runAnimHoldTicks = 0;
-
-            // ✅ reset exactly once on attack start (prevents occasional T-pose / bad blends)
-            if (!wasAttackingClient) {
-                state.getController().forceAnimationReset();
-                wasAttackingClient = true;
-            }
-
-            CatoAttackId id = mob.getCurrentAttackId();
-
-            if (id == CatoAttackId.MELEE_SPECIAL) {
-                state.setAndContinue(ATTACK_SPECIAL);
-            } else if (id == CatoAttackId.RANGED_NORMAL || id == CatoAttackId.RANGED_SPECIAL) {
-                state.setAndContinue(RANGED_ATTACK);
-            } else {
-                state.setAndContinue(ATTACK);
-            }
-
-            return PlayState.CONTINUE;
-        }
-
-        // ------------------------------------------------------------
-        // Water movement
-        // ------------------------------------------------------------
-        if (mob.isInWater()) {
-            runAnimHoldTicks = 0;
-            state.setAndContinue(state.isMoving() ? SURFACE_SWIM : SURFACE_IDLE);
-            return PlayState.CONTINUE;
-        }
-
-        // ------------------------------------------------------------
-        // Ground movement / idle
-        // ------------------------------------------------------------
-        if (state.isMoving()) {
-
-            // If we are truly in RUN mode, refresh the hold timer.
-            if (mob.getMoveMode() == MOVE_RUN) {
-                runAnimHoldTicks = RUN_ANIM_HOLD_TICKS;
-                state.setAndContinue(RUN);
-            } else {
-                // Not in RUN mode (probably WALK), but if we *recently* were running,
-                // keep RUN for a few ticks to avoid "almost-run" blending jitter.
-                if (runAnimHoldTicks > 0) {
-                    runAnimHoldTicks--;
-                    state.setAndContinue(RUN);
-                } else {
-                    state.setAndContinue(WALK);
-                }
-            }
-
-        } else {
-            // Not moving → clear hold so next run starts clean
-            runAnimHoldTicks = 0;
-
-            state.setAndContinue(
-                    (mob.isVisuallyAngry() && mob.hasCombatTarget())
-                            ? BATTLE_IDLE
-                            : IDLE
-            );
-        }
-
-        return PlayState.CONTINUE;
+    static {
+        ANIMATIONS.put("idle", RawAnimation.begin().thenLoop("animation.pikachu.ground_idle"));
+        ANIMATIONS.put("walk", RawAnimation.begin().thenLoop("animation.pikachu.ground_walk"));
+        ANIMATIONS.put("run", RawAnimation.begin().thenLoop("animation.pikachu.ground_run"));
+        ANIMATIONS.put("melee_normal", RawAnimation.begin().thenPlay("animation.pikachu.melee"));
+        ANIMATIONS.put("melee_special", RawAnimation.begin().thenPlay("animation.pikachu.melee_special"));
+        ANIMATIONS.put("ranged_normal", RawAnimation.begin().thenPlay("animation.pikachu.ranged"));
+        ANIMATIONS.put("ranged_special", RawAnimation.begin().thenPlay("animation.pikachu.ranged"));
+        ANIMATIONS.put("angry", RawAnimation.begin().thenLoop("animation.pikachu.angry"));
+        ANIMATIONS.put("battle_idle", RawAnimation.begin().thenLoop("animation.pikachu.battle_idle"));
+        ANIMATIONS.put("blink", RawAnimation.begin().thenPlay("animation.pikachu.blink"));
+        ANIMATIONS.put("surface_idle", RawAnimation.begin().thenLoop("animation.pikachu.surfacewater_idle"));
+        ANIMATIONS.put("surface_swim", RawAnimation.begin().thenLoop("animation.pikachu.surfacewater_swim"));
+        ANIMATIONS.put("sleep", RawAnimation.begin().thenLoop("animation.pikachu.sleep"));
     }
+
+    // ================================================================
+    // 4) Animation Controller Setup (modified)
+    // ================================================================
+    /**
+     * Registers the animation controllers using the helper class.
+     */
+    private final AnimationControllerHelper animationControllerHelper = new AnimationControllerHelper();
 
     @Override
     public void registerControllers(AnimatableManager.ControllerRegistrar controllers) {
-        controllers.add(new AnimationController<>(this, "main", 3, this::movementController));
-        controllers.add(new AnimationController<>(this, "angry", 0, s -> this.overlayController(s, this.isVisuallyAngry(), ANGRY)));
-        controllers.add(new AnimationController<>(this, "blink", 0, s -> this.blinkController(s, BLINK)));
+        // Use the helper class to handle controller logic
+        AnimationControllerHelper.registerControllers(controllers, this, ANIMATIONS, new AnimationControllerHelper.AnimationStateFunction() {
+
+            @Override
+            public <E extends GeoEntity> PlayState movementController(AnimationState<E> state, E mob, Map<String, RawAnimation> animations) {
+                return animationControllerHelper.movementController(state, mob, animations);
+            }
+
+            @Override
+            public <E extends GeoEntity> PlayState overlayController(AnimationState<E> state, E mob, Map<String, RawAnimation> animations, String animationKey) {
+                return animationControllerHelper.overlayController(state, mob, animations, animationKey);
+            }
+
+            @Override
+            public <E extends GeoEntity> PlayState blinkController(AnimationState<E> state, E mob, Map<String, RawAnimation> animations) {
+                return animationControllerHelper.blinkController(state, mob, animations);
+            }
+        });
     }
 
     // ================================================================
     // 5) LIFECYCLE & HOOKS
     // ================================================================
-
+    /**
+     * The cache for handling animation instances.
+     */
     private final AnimatableInstanceCache cache = new SingletonAnimatableInstanceCache(this);
 
+    /**
+     * Constructor for the PikachuMaleMob entity.
+     */
     public PikachuMaleMob(EntityType<? extends CatoBaseMob> type, Level level) {
         super(type, level);
     }
 
+    /**
+     * Handles breeding and offspring creation for PikachuMaleMob.
+     */
     @Nullable
     @Override
     public AgeableMob getBreedOffspring(ServerLevel level, AgeableMob parent) {
         return CMEntities.PIKACHU_MALE.get().create(level);
     }
 
+    /**
+     * Returns the animation instance cache for this mob.
+     */
     @Override
     public AnimatableInstanceCache getAnimatableInstanceCache() {
         return this.cache;

@@ -154,9 +154,9 @@ public abstract class CatoBaseMob extends Animal {
         if (surfaceMalusApplied) return;
         surfaceMalusApplied = true;
 
-        final CatoMobSpeciesInfo info = infoServer(); // ✅ consistent (cached when available)
+        final CatoMobSpeciesInfo info = infoServer();
 
-        // ✅ Default: LAND mobs avoid water unless they explicitly prefer it
+        // LAND mobs avoid water unless they explicitly prefer it
         if (info.movementType() == CatoMobMovementType.LAND) {
             this.setPathfindingMalus(PathType.WATER, 12.0F);
             this.setPathfindingMalus(PathType.WATER_BORDER, 6.0F);
@@ -562,125 +562,183 @@ public abstract class CatoBaseMob extends Animal {
     // ================================================================
     // 7.5) FLEE STATE (server-side)
     // ================================================================
+
+    // Tracks the number of remaining ticks until the mob stops fleeing.
     private int fleeTicksRemaining = 0;
+
+    // Tracks the cooldown duration before the mob can flee again.
     private long fleeCooldownUntil = 0L;
+
+    // Tracks the entity that the mob is fleeing from.
     private LivingEntity fleeThreat = null;
 
+    /**
+     * Checks if the mob is currently fleeing.
+     * @return true if the mob is fleeing; false otherwise.
+     */
     public boolean isFleeing() {
+        // Only returns true if the mob is not on the client-side and fleeTicksRemaining is greater than 0
         return !this.level().isClientSide && fleeTicksRemaining > 0;
     }
 
+    /**
+     * Retrieves the entity that the mob is fleeing from.
+     * @return the threat entity, or null if there is no threat.
+     */
     public LivingEntity getFleeThreat() {
         return fleeThreat;
     }
 
+    /**
+     * Checks if the mob is on a cooldown and cannot flee.
+     * @return true if the mob is on cooldown; false otherwise.
+     */
     private boolean isFleeOnCooldown() {
+        // Returns true if the current server time is less than the fleeCooldownUntil time.
         return nowServer() < fleeCooldownUntil;
     }
 
+    /**
+     * Initiates the flee state with the given threat entity.
+     * @param threat the entity the mob is fleeing from.
+     */
     private void startFlee(LivingEntity threat) {
+        // Starts fleeing with no cooldown bypass.
         startFlee(threat, false);
     }
 
+    /**
+     * Initiates the flee state with the given threat entity, and optionally bypasses the cooldown.
+     * @param threat the entity the mob is fleeing from.
+     * @param bypassCooldown if true, the cooldown is bypassed and fleeing starts immediately.
+     */
     private void startFlee(LivingEntity threat, boolean bypassCooldown) {
-        if (this.level().isClientSide) return;
+        if (this.level().isClientSide) return;  // Fleeing logic is only relevant on the server.
 
-        CatoMobSpeciesInfo info = getSpeciesInfo();
-        if (!info.fleeEnabled()) return;
-        if (info.fleeDurationTicks() <= 0) return;
+        CatoMobSpeciesInfo info = getSpeciesInfo();  // Retrieve species-specific info.
 
+        // Return if fleeing is disabled or if the species' flee duration is less than or equal to 0.
+        if (!info.fleeEnabled() || info.fleeDurationTicks() <= 0) return;
+
+        // If cooldown is not bypassed and the mob is still on cooldown, do not flee.
         if (!bypassCooldown && isFleeOnCooldown()) return;
 
+        // Set the fleeing threat and duration.
         this.fleeThreat = threat;
         this.fleeTicksRemaining = info.fleeDurationTicks();
 
-        // Flee overrides combat/retaliation while active
-        this.angerTime = 0;
+        // Clear aggression-related states and stop navigation during fleeing.
+        this.angerTime = 0;  // Reset anger timer.
         this.setTarget(null);
         this.setAggressive(false);
         this.setLastHurtByMob(null);
         clearAttackState();
 
+        // Stop the mob from moving and reset its move mode.
         this.getNavigation().stop();
     }
 
+    /**
+     * Checks if the mob should flee due to low health.
+     * This method is called server-side to decide if fleeing should start.
+     */
     private void tickFleeLowHealthServer() {
-        if (this.level().isClientSide) return;
+        if (this.level().isClientSide) return;  // Client-side logic is not needed here.
 
-        final CatoMobSpeciesInfo info = infoServer();
+        final CatoMobSpeciesInfo info = infoServer();  // Retrieve species-specific info.
+
+        // Return if fleeing is not enabled or the mob doesn't flee on low health.
         if (!info.fleeEnabled() || !info.fleeOnLowHealth()) return;
 
+        // Return if the mob is already fleeing or is on cooldown.
         if (isFleeing()) return;
         if (isFleeOnCooldown()) return;
 
+        // If the mob's health is above the threshold, don't initiate fleeing.
         if (this.getHealth() > info.fleeLowHealthThreshold()) return;
 
+        // Get the threat entity from the last hurt entity or current target.
         LivingEntity threat = this.getLastHurtByMob();
         if (threat == null) threat = this.getTarget();
 
+        // If a valid threat is found, start fleeing and trigger group flee.
         if (threat != null) {
             startFlee(threat, false);
-            triggerGroupFlee(threat);
+            triggerGroupFlee(threat);  // Trigger group flee for nearby allies.
         }
     }
 
+    /**
+     * Triggers group flee behavior. Allies within a certain radius will also flee.
+     * @param threat the entity the mob is fleeing from.
+     */
     private void triggerGroupFlee(LivingEntity threat) {
-        if (this.level().isClientSide) return;
+        if (this.level().isClientSide) return;  // Client-side logic is not needed here.
 
-        final CatoMobSpeciesInfo info = infoServer();
+        final CatoMobSpeciesInfo info = infoServer();  // Retrieve species-specific info.
+
+        // Return if group flee is not enabled.
         if (!info.groupFleeEnabled()) return;
 
-        double r = Math.max(0.0D, info.groupFleeRadius());
-        int max = Math.max(0, info.groupFleeMaxAllies());
-        if (r <= 0.0D || max <= 0) return;
+        double radius = Math.max(0.0D, info.groupFleeRadius());  // Get the flee radius.
+        int maxAllies = Math.max(0, info.groupFleeMaxAllies());  // Max number of allies to trigger group flee.
+        if (radius <= 0.0D || maxAllies <= 0) return;  // If no valid radius or allies, don't proceed.
 
-        var box = this.getBoundingBox().inflate(r, 4.0D, r);
+        // Get the bounding box to search for nearby allies.
+        var box = this.getBoundingBox().inflate(radius, 4.0D, radius);
 
+        // Define the conditions for ally selection: any Cato mob or specific ally types.
         final boolean anyCato = info.groupFleeAnyCatoMobAllies();
-        final var allowedTypes = info.groupFleeAllyTypes(); // may be empty
+        final var allowedTypes = info.groupFleeAllyTypes();  // May be empty.
 
-        // Collect candidates
+        // Collect potential allies based on the above conditions.
         List<? extends LivingEntity> candidates;
         if (anyCato) {
             candidates = this.level().getEntitiesOfClass(
                     CatoBaseMob.class,
                     box,
-                    e -> e != this && e.isAlive()
+                    e -> e != this && e.isAlive()  // Filter out this mob and non-living entities.
             );
         } else if (allowedTypes != null && !allowedTypes.isEmpty()) {
             candidates = this.level().getEntitiesOfClass(
                     CatoBaseMob.class,
                     box,
-                    e -> e != this && e.isAlive() && allowedTypes.contains(e.getType())
+                    e -> e != this && e.isAlive() && allowedTypes.contains(e.getType())  // Filter by ally types.
             );
         } else {
-            // No ally definition -> don't spread at all
-            return;
+            return;  // If no allies, don't trigger group flee.
         }
 
-        int triggered = 0;
-
+        // Trigger group flee for eligible allies.
+        int triggered = 0;  // Tracks how many allies have been triggered to flee.
         for (var entity : candidates) {
-            if (triggered >= max) break;
-            if (!(entity instanceof CatoBaseMob ally)) continue;
+            if (triggered >= maxAllies) break;  // Stop if the maximum number of allies is reached.
 
-            // LOS requirement: ally must be able to see the hurt mob (THIS)
+            if (!(entity instanceof CatoBaseMob ally)) continue;  // Only process CatoBaseMob entities.
+
+            // Ensure the ally can see the mob to flee with.
             if (!ally.hasLineOfSight(this)) continue;
 
+            // Skip if the ally is already fleeing.
             if (ally.isFleeing()) continue;
 
             boolean bypassCooldown = info.groupFleeBypassCooldown();
 
-            // optional: ensure ally can actually flee at all
+            // Ensure the ally can flee at all.
             if (!ally.infoServer().fleeEnabled()) continue;
 
-            ally.startFleeFromAlly(threat, bypassCooldown);
+            ally.startFleeFromAlly(threat, bypassCooldown);  // Trigger flee on the ally.
             triggered++;
         }
     }
 
+    /**
+     * Starts fleeing from an ally in a group flee situation.
+     * @param threat the entity the mob is fleeing from.
+     * @param bypassCooldown whether to bypass the cooldown.
+     */
     void startFleeFromAlly(LivingEntity threat, boolean bypassCooldown) {
-        startFlee(threat, bypassCooldown);
+        startFlee(threat, bypassCooldown);  // Simply starts fleeing from the threat with cooldown options.
     }
 
     // ================================================================

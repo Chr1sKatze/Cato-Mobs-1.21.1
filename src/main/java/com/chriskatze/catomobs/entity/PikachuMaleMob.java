@@ -41,24 +41,24 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
                     .surfacePreference(-0.5D, 1.5D,1.0D,0.0D)
 
                     // COMBAT BEHAVIOR
-                    .retaliation(true,20 * 15)
+                    .retaliation(true,20 * 30)
                     .flee(false, true, 4.0F, false, 20 * 30, 20 * 10, 1.35D, 20.0D)
                     .groupFlee(true,12.0D,10,false)
                     .groupFleeAllies(false, Set.of(CMEntities.PIKACHU_MALE.get())) // true(, null) = all catomobs are allies
 
                     // COMBAT STYLE
-                    .onlyUseRanged(true)
-                    .rangedUnlessClose(false,10.0D,6.0D)
+                    .onlyUseRanged(false)
+                    .rangedUnlessClose(true,10.0D,6.0D)
                     .onlyUseMelee(false)
 
                     // FIGHT
-                    .melee(2.0D, 2.0D, 4.00, 70, 60,30,true,0,0)
-                    .specialMelee(true,2.0D,4.0D,70,60,30,4.0D,true,0,0,0.50f,1,false)
+                    .melee(1.0D, 2.0D, 4.00, 70, 60,30,true,0,0)
+                    .specialMelee(true,2.0D,4.0D,70,60,30,2.0D,true,0,0,1.0f,1,false)
 
-                    .ranged(true,12.0D,70,60,30,2.00, true,0,0, CatoMobSpeciesInfo.RangedDelivery.HITSCAN)
-                    .specialRanged(true,14.0D,70,60,30,6.0D, CatoMobSpeciesInfo.RangedDelivery.PROJECTILE,1.0f,1,false)
+                    .ranged(true,12.0D,70,60,30,1.00, true,0,0, CatoMobSpeciesInfo.RangedDelivery.HITSCAN)
+                    .specialRanged(true,14.0D,70,60,30,2.0D, CatoMobSpeciesInfo.RangedDelivery.PROJECTILE,1.0f,2,false)
 
-                    .chaseSpeed(1.60D)
+                    .chaseSpeed(1.0D)
 
                     // WANDERING AROUND BEHAVIOR
                     .wander(1.0D, 1.35D, 0.35F, 3.0D, 32.0D)
@@ -85,7 +85,7 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
                             Set.of(CMEntities.PIKACHU_MALE.get()))
 
                     // SLEEP SPOT SEARCHING
-                    .sleepSearch(400, 32, 1, 12, 20 * 10, 20 * 3, 2.0D, 0.0D, true, true)
+                    .sleepSearch(400, 32, 1, 12, 20 * 10, 20 * 3, 1.0D, 0.0D, true, true)
 
                     // SEEK SHELTER FROM RAIN
                     .rainShelter(true, 20 * 2, 1.0f, 28.0D, 46, 12, 1.35D, 1.00D, 20 * 5)

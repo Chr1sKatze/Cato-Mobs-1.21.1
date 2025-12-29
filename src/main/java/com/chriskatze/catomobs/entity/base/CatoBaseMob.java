@@ -1445,6 +1445,11 @@ public abstract class CatoBaseMob extends Animal {
             // ------------------------------------------------------------
             // 2) RETALIATION (neutral / hostile only)
             // ------------------------------------------------------------
+            // Check if the attacker is in Creative or Spectator mode
+            if (attacker instanceof Player p && (p.isCreative() || p.isSpectator())) {
+                return result;  // Don't retaliate if the attacker is in Creative or Spectator mode
+            }
+
             if (info.retaliateWhenAngered()
                     && info.retaliationDurationTicks() > 0
                     && (info.temperament() == CatoMobTemperament.NEUTRAL
@@ -1763,7 +1768,7 @@ public abstract class CatoBaseMob extends Animal {
     private static final int SLEEP_SPOT_BLACKLIST_MAX_STRIKES = 6;
     private static final int SLEEP_SPOT_BLACKLIST_THRESHOLD = 3;
 
-    private static final int SLEEP_SPOT_BLACKLIST_DECAY_INTERVAL_TICKS = 200; // 10s
+    private static final int SLEEP_SPOT_BLACKLIST_DECAY_INTERVAL_TICKS = 1200; // 60s
     private int sleepSpotBlacklistDecayTicker = 0;
 
     public boolean isSleepSpotBlacklisted(@Nullable BlockPos pos) {
@@ -1802,6 +1807,13 @@ public abstract class CatoBaseMob extends Animal {
         if (this.level().isClientSide) {
             blink().tick(allowBlink());
             return;
+        }
+
+        // Check if the target is in Creative or Spectator mode
+        if (this.getTarget() instanceof Player p && (p.isCreative() || p.isSpectator())) {
+            this.setTarget(null); // Clear the target if it's a Creative/Spectator player
+            this.setAggressive(false); // Ensure the mob does not become aggressive
+            return; // Skip the rest of the processing for combat
         }
 
         // start cache (server-only)

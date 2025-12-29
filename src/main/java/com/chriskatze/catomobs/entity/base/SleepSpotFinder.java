@@ -128,9 +128,7 @@ public final class SleepSpotFinder {
         final int centerY = mob.getBlockY();
         final int centerZ = mob.getBlockZ();
 
-        final double mul = Math.max(0.1D, info.sleepSearchRadiusMultiplier());
-        final double maxRadius = Math.max(info.wanderMaxRadius(), 4.0D) * mul;
-        final double minRadius = Math.max(0.0D, Math.min(info.wanderMinRadius() * mul, maxRadius));
+        final double sleepSearchRadius = Math.max(1.0D, info.sleepSearchRadius());
 
         final BlockPos home = mob.getHomePos();
         final boolean enforceHome = info.sleepSearchRespectHomeRadius()
@@ -227,7 +225,7 @@ public final class SleepSpotFinder {
 
         for (int attempt = 0; attempt < maxAttempts; attempt++) {
             double angle = mob.getRandom().nextDouble() * (Math.PI * 2.0D);
-            double dist = minRadius + mob.getRandom().nextDouble() * (maxRadius - minRadius);
+            double dist = mob.getRandom().nextDouble() * sleepSearchRadius;
 
             if (dist < info.sleepSearchMinDistance()) continue;
 
@@ -343,7 +341,7 @@ public final class SleepSpotFinder {
         if (maxAttempts > 0) {
             for (int attempt = 0; attempt < maxAttempts; attempt++) {
                 double angle = mob.getRandom().nextDouble() * (Math.PI * 2.0D);
-                double dist = minRadius + mob.getRandom().nextDouble() * (maxRadius - minRadius);
+                double dist = mob.getRandom().nextDouble() * sleepSearchRadius;
 
                 if (dist < info.sleepSearchMinDistance()) continue;
 
@@ -503,7 +501,6 @@ public final class SleepSpotFinder {
 
         return found ? new BlockPos(bestX, bestY, bestZ) : null;
     }
-
 
     // ================================================================
     // Package-private helpers (still available for buddy-relocator)

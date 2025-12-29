@@ -251,7 +251,7 @@ public record CatoMobSpeciesInfo(
         int sleepSearchCeilingScanMaxBlocks,
         int sleepSearchTimeoutTicks,
         int sleepSearchCooldownTicks,
-        double sleepSearchRadiusMultiplier,
+        double sleepSearchRadius,
         double sleepSearchMinDistance,
         boolean sleepSearchRespectHomeRadius,
         boolean sleepSearchRequireSolidGround,

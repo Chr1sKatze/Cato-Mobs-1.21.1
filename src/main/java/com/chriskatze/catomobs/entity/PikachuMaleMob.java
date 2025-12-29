@@ -85,12 +85,12 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
                             Set.of(CMEntities.PIKACHU_MALE.get()))
 
                     // SLEEP SPOT SEARCHING
-                    .sleepSearch(400, 32, 1, 12, 20 * 10, 20 * 3, 1.0D, 0.0D, true, true)
+                    .sleepSearch(3, 3, 1, 12, 20 * 15, 20 * 3, 24.0D, 0.0D, true, true)
 
                     // SEEK SHELTER FROM RAIN
-                    .rainShelter(true, 20 * 2, 1.0f, 28.0D, 46, 12, 1.35D, 1.00D, 20 * 5)
-                    .rainShelterPeek(20 * 20, 20 * 3, 20 * 5, 2.0D, 6.0D, 16) // have a quick peek into the rain
-                    .rainShelterShuffle(true, 20 * 30, 20 * 50, 16) // move around under roof
+                    .rainShelter(true, 20 * 2, 1.0f, 24.0D, 46, 12, 1.35D, 1.00D, 20 * 5)
+                    .rainShelterPeek(20 * 20, 20 * 3, 20 * 5, 2.0D, 6.0D, 16)
+                    .rainShelterShuffle(true, 20 * 30, 20 * 50, 16)
 
                     .build();
 

@@ -257,7 +257,7 @@ public final class CatoMobSpeciesInfoBuilder {
     private int sleepSearchCeilingScanMaxBlocks = 8;
     private int sleepSearchTimeoutTicks = 20 * 5;
     private int sleepSearchCooldownTicks = 20 * 3;
-    private double sleepSearchRadiusMultiplier = 1.5D;
+    private double sleepSearchRadius = 24.0D;
     private double sleepSearchMinDistance = 2.0D;
     private boolean sleepSearchRespectHomeRadius = true;
     private boolean sleepSearchRequireSolidGround = true;
@@ -726,7 +726,7 @@ public final class CatoMobSpeciesInfoBuilder {
     public CatoMobSpeciesInfoBuilder sleepSearch(int maxAttempts, int maxPathAttempts,
                                                  int minHeadroomBlocks, int ceilingScanMaxBlocks,
                                                  int timeoutTicks, int cooldownTicks,
-                                                 double radiusMultiplier, double minDistance,
+                                                 double radius, double minDistance,
                                                  boolean respectHomeRadius, boolean requireSolidGround) {
         this.sleepSearchMaxAttempts = maxAttempts;
         this.sleepSearchMaxPathAttempts = maxPathAttempts;
@@ -734,7 +734,7 @@ public final class CatoMobSpeciesInfoBuilder {
         this.sleepSearchCeilingScanMaxBlocks = ceilingScanMaxBlocks;
         this.sleepSearchTimeoutTicks = timeoutTicks;
         this.sleepSearchCooldownTicks = cooldownTicks;
-        this.sleepSearchRadiusMultiplier = radiusMultiplier;
+        this.sleepSearchRadius = radius;
         this.sleepSearchMinDistance = minDistance;
         this.sleepSearchRespectHomeRadius = respectHomeRadius;
         this.sleepSearchRequireSolidGround = requireSolidGround;
@@ -1215,7 +1215,7 @@ public final class CatoMobSpeciesInfoBuilder {
                 ceilingScan,
                 timeout,
                 cooldown,
-                sleepSearchRadiusMultiplier,
+                sleepSearchRadius,
                 sleepSearchMinDistance,
                 sleepSearchRespectHomeRadius,
                 sleepSearchRequireSolidGround,

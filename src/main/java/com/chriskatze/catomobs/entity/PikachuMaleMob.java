@@ -2,6 +2,7 @@ package com.chriskatze.catomobs.entity;
 
 import com.chriskatze.catomobs.entity.base.CatoBaseMob;
 import com.chriskatze.catomobs.registry.CMEntities;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.AgeableMob;
 import net.minecraft.world.entity.EntityType;
@@ -47,13 +48,13 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
                     .groupFleeAllies(false, Set.of(CMEntities.PIKACHU_MALE.get())) // true(, null) = all catomobs are allies
 
                     // COMBAT STYLE
-                    .onlyUseRanged(true)
-                    .rangedUnlessClose(false, 10.0D, 6.0D)
+                    .onlyUseRanged(false)
+                    .rangedUnlessClose(true, 10.0D, 6.0D)
                     .onlyUseMelee(false)
 
                     // FIGHT
                     .melee(1.0D, 2.0D, 4.00, 70, 60, 30, true, 0, 0)
-                    .specialMelee(false, 2.0D, 4.0D, 70, 60, 30, 2.0D,
+                    .specialMelee(true, 2.0D, 4.0D, 70, 60, 30, 2.0D,
                             true, 0, 0, 1.0f, 1, false)
                     .ranged(true, 12.0D, 70, 60, 30, 1.00, 1.0f, 0.0f,
                             true,0,0, CatoMobSpeciesInfo.RangedDelivery.PROJECTILE)
@@ -127,6 +128,90 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
         ANIMATIONS.put("surface_idle", RawAnimation.begin().thenLoop("animation.pikachu.surfacewater_idle"));
         ANIMATIONS.put("surface_swim", RawAnimation.begin().thenLoop("animation.pikachu.surfacewater_swim"));
         ANIMATIONS.put("sleep", RawAnimation.begin().thenLoop("animation.pikachu.sleep"));
+    }
+
+    // ================================================================
+    // 3.5) FX DEFINITIONS (sounds + particles)
+    // ================================================================
+    @Override
+    protected Map<CatoMobFx.Key, CatoMobFx.Entry> getFxMap() {
+        return FX;
+    }
+
+    private static ResourceLocation rl(String namespace, String path) {
+        return ResourceLocation.fromNamespaceAndPath(namespace, path);
+    }
+
+    private static final Map<CatoMobFx.Key, CatoMobFx.Entry> FX = new HashMap<>();
+
+    static {
+        // --- Attack START ---
+        FX.put(CatoMobFx.Key.ATTACK_START_MELEE_NORMAL,
+                CatoMobFx.Entry.both(
+                        rl("catomobs","generic/placeholder_sound"), 0.9f, 1.2f,
+                        rl("catomobs","generic/placeholder_particle"), 8,
+                        0.2, 0.2, 0.2, 0.02
+                ));
+
+        FX.put(CatoMobFx.Key.ATTACK_START_MELEE_SPECIAL,
+                CatoMobFx.Entry.both(
+                        rl("catomobs","generic/placeholder_sound"), 0.6f, 1.8f,
+                        rl("catomobs","generic/placeholder_particle"), 18,
+                        0.35, 0.35, 0.35, 0.08
+                ));
+
+        FX.put(CatoMobFx.Key.ATTACK_START_RANGED_NORMAL,
+                CatoMobFx.Entry.both(
+                        rl("catomobs","generic/placeholder_sound"), 0.9f, 1.4f,
+                        rl("catomobs","generic/placeholder_particle"), 8,
+                        0.25, 0.25, 0.25, 0.03
+                ));
+
+        FX.put(CatoMobFx.Key.ATTACK_START_RANGED_SPECIAL,
+                CatoMobFx.Entry.both(
+                        rl("catomobs","generic/placeholder_sound"), 0.9f, 1.2f,
+                        rl("catomobs","generic/placeholder_particle"), 22,
+                        0.45, 0.45, 0.45, 0.10
+                ));
+
+        // --- Attack FIRE (exact hit/fire tick) ---
+        FX.put(CatoMobFx.Key.ATTACK_FIRE_RANGED_NORMAL,
+                CatoMobFx.Entry.particles(
+                        rl("catomobs","generic/placeholder_particle"), 10,
+                        0.15, 0.15, 0.15, 0.06
+                ));
+
+        FX.put(CatoMobFx.Key.ATTACK_FIRE_RANGED_SPECIAL,
+                CatoMobFx.Entry.particles(
+                        rl("catomobs","generic/placeholder_particle"), 14,
+                        0.18, 0.18, 0.18, 0.08
+                ));
+
+        FX.put(CatoMobFx.Key.ATTACK_FIRE_MELEE_NORMAL,
+                CatoMobFx.Entry.particles(
+                        rl("catomobs","generic/placeholder_particle"), 8,
+                        0.18, 0.18, 0.18, 0.03
+                ));
+
+        FX.put(CatoMobFx.Key.ATTACK_FIRE_MELEE_SPECIAL,
+                CatoMobFx.Entry.particles(
+                        rl("catomobs","generic/placeholder_particle"), 14,
+                        0.25, 0.25, 0.25, 0.08
+                ));
+
+        // --- Death ---
+        FX.put(CatoMobFx.Key.DEATH_START,
+                CatoMobFx.Entry.both(
+                        rl("catomobs","generic/placeholder_sound"), 0.7f, 1.6f,
+                        rl("catomobs","generic/placeholder_particle"), 25,
+                        0.5, 0.6, 0.5, 0.12
+                ));
+
+        FX.put(CatoMobFx.Key.DEATH_FINAL,
+                CatoMobFx.Entry.particles(
+                        rl("catomobs","generic/placeholder_particle"), 16,
+                        0.35, 0.25, 0.35, 0.02
+                ));
     }
 
     // ================================================================

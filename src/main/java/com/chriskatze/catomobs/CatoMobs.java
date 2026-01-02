@@ -1,11 +1,14 @@
 package com.chriskatze.catomobs;
 
+import com.chriskatze.catomobs.client.particle.PlaceholderParticle;
 import com.chriskatze.catomobs.client.render.PikachuMaleRenderer;
 import com.chriskatze.catomobs.entity.PikachuMaleMob;
 import com.chriskatze.catomobs.entity.base.CatoBaseMob;
 import com.chriskatze.catomobs.network.CMNetwork;
 import com.chriskatze.catomobs.registry.CMEntities;
 import com.chriskatze.catomobs.registry.CMItems;
+import com.chriskatze.catomobs.registry.CMParticles;
+import com.chriskatze.catomobs.registry.CMSounds;
 import com.mojang.logging.LogUtils;
 import net.minecraft.client.Minecraft;
 import net.minecraft.world.item.CreativeModeTabs;
@@ -17,6 +20,7 @@ import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.neoforged.neoforge.client.event.EntityRenderersEvent;
+import net.neoforged.neoforge.client.event.RegisterParticleProvidersEvent;
 import net.neoforged.neoforge.event.BuildCreativeModeTabContentsEvent;
 import net.neoforged.neoforge.event.entity.EntityAttributeCreationEvent;
 import org.slf4j.Logger;
@@ -71,6 +75,8 @@ public class CatoMobs {
         // These register your EntityTypes and Items to the game registry at the correct time.
         CMEntities.ENTITY_TYPES.register(modEventBus);
         CMItems.ITEMS.register(modEventBus);
+        CMSounds.SOUND_EVENTS.register(modEventBus);
+        CMParticles.PARTICLES.register(modEventBus);
 
         // ------------------------------------------------------------
         // Additional mod event listeners
@@ -80,6 +86,9 @@ public class CatoMobs {
 
         // Add items into creative tabs (spawn eggs, etc.)
         modEventBus.addListener(this::addCreativeTabContents);
+
+        // Register client-side particle providers (sprites + rendering)
+        modEventBus.addListener(ClientModEvents::registerParticleProviders);
     }
 
     /**
@@ -160,6 +169,14 @@ public class CatoMobs {
                     CMEntities.PIKACHU_MALE.get(),
                     // Renderer factory (constructs a new renderer instance)
                     PikachuMaleRenderer::new
+            );
+        }
+
+        @SubscribeEvent
+        public static void registerParticleProviders(RegisterParticleProvidersEvent event) {
+            event.registerSpriteSet(
+                    CMParticles.PLACEHOLDER_PARTICLE.get(),
+                    PlaceholderParticle.Provider::new
             );
         }
     }

@@ -3,10 +3,15 @@ package com.chriskatze.catomobs.entity.base;
 import com.chriskatze.catomobs.entity.*;
 import com.chriskatze.catomobs.entity.component.BlinkComponent;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.particles.ParticleType;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.network.protocol.game.ClientboundSoundPacket;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.sounds.SoundEvent;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.*;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
@@ -887,6 +892,153 @@ public abstract class CatoBaseMob extends Animal {
     protected void onChaseStop() { }
 
     // ================================================================
+    // 11.6) FX MAP (sounds + particles) - per mob
+    // ================================================================
+
+    /**
+     * Override in each mob (like your ANIMATIONS map) to define FX.
+     * Default: no FX.
+     */
+    protected java.util.Map<CatoMobFx.Key, CatoMobFx.Entry> getFxMap() {
+        return java.util.Map.of();
+    }
+
+    /**
+     * Fires an FX key: plays optional sound + spawns optional particles.
+     * Server-only; safe if ids are missing.
+     */
+    protected final void fireFx(CatoMobFx.Key key) {
+        if (key == null) return;
+        if (this.level().isClientSide) return;
+
+        final var map = getFxMap();
+        if (map == null || map.isEmpty()) return;
+
+        final CatoMobFx.Entry e = map.get(key);
+        if (e == null) return;
+
+        // --- SOUND (distance-based per listener) ---
+        if (e.soundId() != null && this.level() instanceof ServerLevel sl) {
+            if (BuiltInRegistries.SOUND_EVENT.containsKey(e.soundId())) {
+                SoundEvent se = BuiltInRegistries.SOUND_EVENT.get(e.soundId());
+
+                final float baseVol = Math.max(0.0F, e.soundVolume());
+                final float pitch   = Math.max(0.01F, e.soundPitch());
+
+                // iterate nearby players and send individualized volume
+                for (ServerPlayer sp : sl.players()) {
+                    if (sp == null) continue;
+
+                    double distSqr = sp.distanceToSqr(this);
+                    double dist = Math.sqrt(distSqr);
+
+                    if (dist > FX_SOUND_MAX_DIST) continue;
+
+                    float scale = fxVolumeScale(dist);
+                    float vol = baseVol * scale;
+
+                    if (vol <= 0.001f) continue;
+
+                    // Send packet directly so this player hears *scaled* volume
+                    sp.connection.send(new ClientboundSoundPacket(
+                            BuiltInRegistries.SOUND_EVENT.wrapAsHolder(se),
+                            this.getSoundSource(),
+                            this.getX(), this.getY(), this.getZ(),
+                            vol,
+                            pitch,
+                            this.getRandom().nextLong()
+                    ));
+                }
+            }
+        }
+
+        // --- PARTICLES ---
+        if (e.particleId() != null && this.level() instanceof ServerLevel sl) {
+            if (BuiltInRegistries.PARTICLE_TYPE.containsKey(e.particleId())) {
+                ParticleType<?> type = BuiltInRegistries.PARTICLE_TYPE.get(e.particleId());
+
+                // ParticleType -> ParticleOptions: the registry stores the type,
+                // but sendParticles needs ParticleOptions. For vanilla/simple particles,
+                // the ParticleType itself is also a ParticleOptions via SimpleParticleType.
+                // We'll support SimpleParticleType safely.
+                if (type instanceof net.minecraft.core.particles.SimpleParticleType simple) {
+                    sl.sendParticles(
+                            simple,
+                            this.getX(), this.getY(0.5D), this.getZ(),
+                            Math.max(0, e.particleCount()),
+                            e.particleDx(), e.particleDy(), e.particleDz(),
+                            e.particleSpeed()
+                    );
+                }
+            }
+        }
+    }
+
+    protected final CatoMobFx.Key fxKeyAttackStart(@Nullable CatoAttackId id) {
+        if (id == null) return null;
+        return switch (id) {
+            case MELEE_NORMAL -> CatoMobFx.Key.ATTACK_START_MELEE_NORMAL;
+            case MELEE_SPECIAL -> CatoMobFx.Key.ATTACK_START_MELEE_SPECIAL;
+            case RANGED_NORMAL -> CatoMobFx.Key.ATTACK_START_RANGED_NORMAL;
+            case RANGED_SPECIAL -> CatoMobFx.Key.ATTACK_START_RANGED_SPECIAL;
+        };
+    }
+
+    protected final CatoMobFx.Key fxKeyAttackFire(@Nullable CatoAttackId id) {
+        if (id == null) return null;
+        return switch (id) {
+            case MELEE_NORMAL -> CatoMobFx.Key.ATTACK_FIRE_MELEE_NORMAL;
+            case MELEE_SPECIAL -> CatoMobFx.Key.ATTACK_FIRE_MELEE_SPECIAL;
+            case RANGED_NORMAL -> CatoMobFx.Key.ATTACK_FIRE_RANGED_NORMAL;
+            case RANGED_SPECIAL -> CatoMobFx.Key.ATTACK_FIRE_RANGED_SPECIAL;
+        };
+    }
+
+    @Override
+    public void die(DamageSource source) {
+        if (!this.level().isClientSide) {
+            // FX: death start (enters death state)
+            fireFx(CatoMobFx.Key.DEATH_START);
+        }
+        super.die(source);
+    }
+
+    @Override
+    protected void tickDeath() {
+        // Vanilla removes entity at the end of deathTime (~20 ticks)
+        // Fire slightly before removal so players still see it.
+        if (!this.level().isClientSide && this.deathTime == 19) {
+            // FX: death final (right before despawn)
+            fireFx(CatoMobFx.Key.DEATH_FINAL);
+        }
+        super.tickDeath();
+    }
+
+    // ================================================================
+    // FX SOUND DISTANCE FALL-OFF (tuning knobs)
+    // ================================================================
+
+    // Full volume until this distance (blocks)
+    private static final double FX_SOUND_FULL_VOLUME_DIST = 7.0D;
+
+    // Silent beyond this distance (blocks)
+    private static final double FX_SOUND_MAX_DIST = 32.0D;
+
+    /**
+     * Returns 0..1 volume multiplier based on listener distance.
+     * Uses a smooth curve (quadratic) so it stays loud up close, drops off later.
+     */
+    private static float fxVolumeScale(double distanceBlocks) {
+        if (distanceBlocks <= FX_SOUND_FULL_VOLUME_DIST) return 1.0f;
+        if (distanceBlocks >= FX_SOUND_MAX_DIST) return 0.0f;
+
+        double t = (distanceBlocks - FX_SOUND_FULL_VOLUME_DIST) / (FX_SOUND_MAX_DIST - FX_SOUND_FULL_VOLUME_DIST); // 0..1
+        double lin = 1.0D - t;          // 1..0
+        double curved = lin * lin;      // quadratic falloff
+        return (float) curved;
+    }
+
+    // ================================================================
     // 12) SLEEP HELPERS (start/wake)
     // ================================================================
 
@@ -1118,6 +1270,8 @@ public abstract class CatoBaseMob extends Animal {
 
         this.onAttackAnimationStart(target);
         this.setAttacking(true);
+        // FX: attack start (melee/ranged, normal/special)
+        fireFx(fxKeyAttackStart(id));
         return true;
     }
 
@@ -1885,13 +2039,14 @@ public abstract class CatoBaseMob extends Animal {
                 if (this.attackTicksUntilHit == 0) {
                     final LivingEntity t = this.queuedAttackTarget;
                     if (t != null && t.isAlive()) {
+                        fireFx(fxKeyAttackFire(this.currentAttackId));
                         // Melee still uses the same close-range hurt logic you already had
                         // Ranged uses delivery mode (hitscan vs projectile)
                         if (this.currentAttackId == CatoAttackId.RANGED_NORMAL || this.currentAttackId == CatoAttackId.RANGED_SPECIAL) {
                             if (this.currentAttackRangedDelivery == CatoMobSpeciesInfo.RangedDelivery.PROJECTILE) {
                                 final boolean special = (this.currentAttackId == CatoAttackId.RANGED_SPECIAL);
 
-                                // ✅ NEW: pull projectile tuning from species config
+                                // pull projectile tuning from species config
                                 final float velocity = special
                                         ? info.rangedSpecialProjectileVelocity()
                                         : info.rangedProjectileVelocity();

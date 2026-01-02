@@ -144,14 +144,6 @@ public final class CatoMobSpeciesInfoBuilder {
     private double wanderRunDistanceThreshold = -1.0D;
 
     // -----------------------------
-    // 5) Water tuning
-    // -----------------------------
-    private double waterSwimSpeedMultiplier = 1.0D;
-
-    private CatoMobSpeciesInfo.WaterMovementConfig waterMovement =
-            CatoMobSpeciesInfo.WaterMovementConfig.disabled();
-
-    // -----------------------------
     // 5.2) Surface preference (NEW)
     // -----------------------------
     private CatoMobSpeciesInfo.SurfacePreferenceConfig surfacePreference =
@@ -533,26 +525,6 @@ public final class CatoMobSpeciesInfoBuilder {
         return this;
     }
 
-    public CatoMobSpeciesInfoBuilder waterSwimSpeedMultiplier(double multiplier) {
-        this.waterSwimSpeedMultiplier = multiplier;
-        return this;
-    }
-
-    public CatoMobSpeciesInfoBuilder waterMovement(CatoMobSpeciesInfo.WaterMovementConfig cfg) {
-        if (cfg != null) this.waterMovement = cfg;
-        return this;
-    }
-
-    public CatoMobSpeciesInfoBuilder waterMovement(boolean dampingEnabled,
-                                                   double verticalDamping,
-                                                   double verticalSpeedClamp,
-                                                   double dampingApplyThreshold) {
-        this.waterMovement = new CatoMobSpeciesInfo.WaterMovementConfig(
-                dampingEnabled, verticalDamping, verticalSpeedClamp, dampingApplyThreshold
-        );
-        return this;
-    }
-
     // ================================================================
     // Surface preference fluent setters
     // ================================================================
@@ -785,8 +757,6 @@ public final class CatoMobSpeciesInfoBuilder {
         double maxRadius = Math.max(this.wanderMaxRadius, 0.0D);
         double minRadius = Math.max(0.0D, Math.min(this.wanderMinRadius, maxRadius));
 
-        double waterMul = (this.waterSwimSpeedMultiplier <= 0.0D) ? 1.0D : this.waterSwimSpeedMultiplier;
-
         double chaseMod = Math.max(0.05D, this.chaseSpeedModifier);
 
         int moveDelay = Math.max(0, this.attackMoveStartDelayTicks);
@@ -798,19 +768,6 @@ public final class CatoMobSpeciesInfoBuilder {
         // wander attempt pacing safety
         int wanderInterval = Math.max(1, this.wanderAttemptIntervalTicks);
         float wanderChance = clamp01(this.wanderAttemptChance);
-
-        CatoMobSpeciesInfo.WaterMovementConfig wmIn =
-                (this.waterMovement == null) ? CatoMobSpeciesInfo.WaterMovementConfig.disabled() : this.waterMovement;
-
-        final CatoMobSpeciesInfo.WaterMovementConfig waterMovementSafe;
-        if (!wmIn.dampingEnabled()) {
-            waterMovementSafe = CatoMobSpeciesInfo.WaterMovementConfig.disabled();
-        } else {
-            double damping = Math.max(0.0D, wmIn.verticalDamping());
-            double clamp = Math.max(0.0D, wmIn.verticalSpeedClamp());
-            double thresh = Math.max(0.0D, wmIn.dampingApplyThreshold());
-            waterMovementSafe = new CatoMobSpeciesInfo.WaterMovementConfig(true, damping, clamp, thresh);
-        }
 
         // Surface preference safety
         CatoMobSpeciesInfo.SurfacePreferenceConfig spIn =
@@ -1194,10 +1151,6 @@ public final class CatoMobSpeciesInfoBuilder {
                 stayWithinHomeRadius,
                 Math.max(0.0D, homeRadius),
                 wanderRunDistanceThreshold,
-
-                // 5) Water
-                waterMul,
-                waterMovementSafe,
 
                 // 5.2) Surface preference
                 surfacePreferenceSafe,

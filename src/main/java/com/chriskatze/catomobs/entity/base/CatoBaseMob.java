@@ -2,7 +2,6 @@ package com.chriskatze.catomobs.entity.base;
 
 import com.chriskatze.catomobs.entity.*;
 import com.chriskatze.catomobs.entity.component.BlinkComponent;
-import com.chriskatze.catomobs.entity.component.WaterMovementComponent;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
@@ -21,8 +20,6 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.crafting.Ingredient;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.phys.EntityHitResult;
-import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import software.bernie.geckolib.animatable.GeoEntity;
 import software.bernie.geckolib.animation.AnimationState;
@@ -94,32 +91,6 @@ public abstract class CatoBaseMob extends Animal {
     /** Renderer reads this (you should apply it in your GeoEntityRenderer). */
     public float getShadowRadius() {
         return Math.max(0f, getSpeciesInfo().shadowRadius());
-    }
-
-    // ================================================================
-    // 4) WATER MOVEMENT COMPONENT (travel() helpers)
-    // ================================================================
-
-    @Nullable
-    private WaterMovementComponent waterMovement;
-
-    protected final WaterMovementComponent waterMovement() {
-        if (waterMovement == null) {
-            var wm = this.getSpeciesInfo().waterMovement();
-            if (wm == null) {
-                wm = CatoMobSpeciesInfo.WaterMovementConfig.disabled();
-            }
-
-            waterMovement = new WaterMovementComponent(
-                    new WaterMovementComponent.Config(
-                            wm.dampingEnabled(),
-                            wm.verticalDamping(),
-                            wm.verticalSpeedClamp(),
-                            wm.dampingApplyThreshold()
-                    )
-            );
-        }
-        return waterMovement;
     }
 
     // ================================================================
@@ -1290,29 +1261,6 @@ public abstract class CatoBaseMob extends Animal {
 
         // Between thresholds: keep current mode
         return rangedModeLatched;
-    }
-
-    // ================================================================
-    // 14.5) MOVEMENT HOOK (shared water smoothing)
-    // ================================================================
-
-    @Override
-    public void travel(Vec3 travelVector) {
-        if (this.isInWater()) {
-            // 1) Scale horizontal input
-            double mul = this.getSpeciesInfo().waterSwimSpeedMultiplier();
-            Vec3 scaled = waterMovement().scaleHorizontalInput(travelVector, mul);
-
-            super.travel(scaled);
-
-            // 2) Dampen bobbing when idle (only if nav done)
-            if (this.getNavigation().isDone()) {
-                this.setDeltaMovement(waterMovement().dampVerticalIfIdle(this.getDeltaMovement()));
-            }
-            return;
-        }
-
-        super.travel(travelVector);
     }
 
     // ================================================================

@@ -70,10 +70,6 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
                     // SWIMMING FOR FUN
                     .funSwim(true, true, true, 20 * 30, 1.0f, 20 * 10, 12.0D, 24)
 
-                    // WATER BEHAVIOR
-                    .waterSwimSpeedMultiplier(2.2D)
-                    .waterMovement(true, 0.7D, 0.4D, 0.2D)
-
                     // SLEEP BEHAVIOR
                     .sleepWindow(true, true, false)
                     .sleepAttempts(20 * 5, 0.50f)
@@ -99,7 +95,8 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
     // ================================================================
     // 2) HEAD ROTATION LIMITS (USED BY MODEL + LOOK CONTROL)
     // ================================================================
-    private static final HeadRotationConfig HEAD_ROTATION_CONFIG = new HeadRotationConfig(20, 30, true, true);
+    private static final HeadRotationConfig HEAD_ROTATION_CONFIG =
+            new HeadRotationConfig(20, 30, true, true);
 
     @Override
     public int getMaxHeadXRot() {

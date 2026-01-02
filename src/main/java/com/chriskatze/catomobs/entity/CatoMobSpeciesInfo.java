@@ -145,13 +145,7 @@ public record CatoMobSpeciesInfo(
         double wanderRunDistanceThreshold,
 
         // ================================================================
-        // 5) WATER MOVEMENT TUNING (travel() modifiers)
-        // ================================================================
-        double waterSwimSpeedMultiplier,
-        WaterMovementConfig waterMovement,
-
-        // ================================================================
-        // 5.2) SURFACE PREFERENCE (water vs solid + soft vs hard ground)
+        // 5.0) SURFACE PREFERENCE (water vs solid + soft vs hard ground)
         // ================================================================
         SurfacePreferenceConfig surfacePreference,
 
@@ -291,21 +285,6 @@ public record CatoMobSpeciesInfo(
     // ================================================================
     // CONFIGS
     // ================================================================
-    public record WaterMovementConfig(
-            boolean dampingEnabled,
-            double verticalDamping,
-            double verticalSpeedClamp,
-            double dampingApplyThreshold
-    ) {
-        public static WaterMovementConfig disabled() {
-            return new WaterMovementConfig(false, 1.0D, 0.0D, 0.0D);
-        }
-
-        public static WaterMovementConfig defaultLandDamping() {
-            return new WaterMovementConfig(true, 0.7D, 0.4D, 0.2D);
-        }
-    }
-
     public record SurfacePreferenceConfig(
             double preferWaterSurfaceWeight,
             double preferSolidSurfaceWeight,

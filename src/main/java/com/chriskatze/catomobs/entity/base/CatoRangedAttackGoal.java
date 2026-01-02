@@ -6,7 +6,6 @@ import com.chriskatze.catomobs.entity.CatoMobTemperament;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.entity.EntitySelector;
 
 import java.util.EnumSet;
 
@@ -46,10 +45,9 @@ public class CatoRangedAttackGoal extends Goal {
         return true;
     }
 
-    // Helper method to check if the target is a creative or spectator player
     private static boolean isInvalidPlayerTarget(LivingEntity target) {
-        if (!(target instanceof Player p)) return false; // Check if the target is a Player
-        return EntitySelector.NO_CREATIVE_OR_SPECTATOR.test(target); // Check if the Player is creative or spectator
+        if (!(target instanceof Player p)) return false;
+        return p.isCreative() || p.isSpectator();
     }
 
     @Override

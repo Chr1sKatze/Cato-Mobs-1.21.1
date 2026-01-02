@@ -106,7 +106,10 @@ public record CatoMobSpeciesInfo(
         boolean rangedMoveDuringAttackAnimation,
         int rangedAttackMoveStartDelayTicks,
         int rangedAttackMoveStopAfterTicks,
+        float rangedProjectileVelocity,
+        float rangedProjectileInaccuracy,
         RangedDelivery rangedDelivery,
+
 
         boolean rangedSpecialEnabled,
         double rangedSpecialTriggerRange,
@@ -114,6 +117,11 @@ public record CatoMobSpeciesInfo(
         int rangedSpecialAnimTotalTicks,
         int rangedSpecialFireDelayTicks,
         double rangedSpecialDamage,
+        boolean rangedSpecialMoveDuringAttackAnimation,
+        int rangedSpecialAttackMoveStartDelayTicks,
+        int rangedSpecialAttackMoveStopAfterTicks,
+        float rangedSpecialProjectileVelocity,
+        float rangedSpecialProjectileInaccuracy,
         RangedDelivery rangedSpecialDelivery,
         float rangedSpecialUseChance,
         int rangedSpecialAfterNormalHits,

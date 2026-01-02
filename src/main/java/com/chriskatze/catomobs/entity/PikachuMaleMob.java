@@ -37,26 +37,28 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
                     // GENERAL SETTINGS
                     .core(16.0D, 0.3D, 48.0D, 0.08D)
                     .shadow(0.4f)
-                    .home(true, 96.0D)
+                    .home(true, 76.0D)
                     .surfacePreference(-0.5D, 1.5D, 1.0D, 0.0D)
 
                     // COMBAT BEHAVIOR
                     .retaliation(true, 20 * 30)
-                    .flee(false, true, 4.0F, false, 20 * 30, 20 * 10, 1.35D, 20.0D)
-                    .groupFlee(true, 12.0D, 10, false)
+                    .flee(false, false, 4.0F, false, 20 * 30, 20 * 10, 1.35D, 20.0D)
+                    .groupFlee(false, 12.0D, 10, false)
                     .groupFleeAllies(false, Set.of(CMEntities.PIKACHU_MALE.get())) // true(, null) = all catomobs are allies
 
                     // COMBAT STYLE
-                    .onlyUseRanged(false)
-                    .rangedUnlessClose(true, 10.0D, 6.0D)
+                    .onlyUseRanged(true)
+                    .rangedUnlessClose(false, 10.0D, 6.0D)
                     .onlyUseMelee(false)
 
                     // FIGHT
                     .melee(1.0D, 2.0D, 4.00, 70, 60, 30, true, 0, 0)
-                    .specialMelee(true, 2.0D, 4.0D, 70, 60, 30, 2.0D, true, 0, 0, 1.0f, 1, false)
-
-                    .ranged(true, 12.0D, 70, 60, 30, 1.00, true, 0, 0, CatoMobSpeciesInfo.RangedDelivery.HITSCAN)
-                    .specialRanged(true, 14.0D, 70, 60, 30, 2.0D, CatoMobSpeciesInfo.RangedDelivery.PROJECTILE, 1.0f, 2, false)
+                    .specialMelee(false, 2.0D, 4.0D, 70, 60, 30, 2.0D,
+                            true, 0, 0, 1.0f, 1, false)
+                    .ranged(true, 12.0D, 70, 60, 30, 1.00, 1.0f, 0.0f,
+                            true,0,0, CatoMobSpeciesInfo.RangedDelivery.PROJECTILE)
+                    .specialRanged(true, 14.0D, 70, 60, 30, 2.0D,3.0f,0.0f,
+                            true,0,0, CatoMobSpeciesInfo.RangedDelivery.PROJECTILE, 1.0f, 2, false)
 
                     .chaseSpeed(1.0D)
 

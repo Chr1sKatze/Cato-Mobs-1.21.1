@@ -1221,31 +1221,31 @@ public abstract class CatoBaseMob extends Animal {
      * Projectile delivery: uses vanilla Arrow for now (no custom projectile class needed).
      * Later you can replace this with your own projectile entity.
      */
-    protected void spawnBasicRangedProjectile(LivingEntity target, double damage) {
+    protected void spawnBasicRangedProjectile(LivingEntity target, double damage, float velocity, float inaccuracy) {
         if (target == null || !target.isAlive()) return;
 
         Level level = this.level();
         if (level.isClientSide) return;
 
         // Create a valid ranged weapon (e.g., a bow)
-        ItemStack weapon = new ItemStack(Items.BOW); // Use a valid ranged weapon like a bow
-        AbstractArrow arrow = ProjectileUtil.getMobArrow(this, weapon, 1.0F, weapon);  // Pass the valid weapon
+        ItemStack weapon = new ItemStack(Items.BOW);
+        AbstractArrow arrow = ProjectileUtil.getMobArrow(this, weapon, 1.0F, weapon);
 
         // Make it behave like an actual attack projectile
-        arrow.setOwner(this); // Set the owner (shooter)
-        arrow.setBaseDamage(Math.max(0.0D, damage)); // Set the damage
+        arrow.setOwner(this);
+        arrow.setBaseDamage(Math.max(0.0D, damage));
 
         // Aim at target
         double dx = target.getX() - this.getX();
         double dy = target.getEyeY() - arrow.getY();
         double dz = target.getZ() - this.getZ();
 
-        // Tune these later via species config if you want:
-        float velocity = 1.6F;     // how fast it flies
-        float inaccuracy = 0.0F;   // how “spread” it is
+        // ✅ NEW: configurable tuning (with safety clamps)
+        float vel = Math.max(0.05F, velocity);
+        float inac = Math.max(0.0F, inaccuracy);
 
-        arrow.shoot(dx, dy, dz, velocity, inaccuracy);  // Adjust projectile velocity and inaccuracy
-        level.addFreshEntity(arrow);  // Add the arrow to the world
+        arrow.shoot(dx, dy, dz, vel, inac);
+        level.addFreshEntity(arrow);
     }
 
     // Combat style latch (server-side). Only used when rangedUnlessClose is enabled.
@@ -1290,23 +1290,6 @@ public abstract class CatoBaseMob extends Animal {
 
         // Between thresholds: keep current mode
         return rangedModeLatched;
-    }
-
-    // Helper to perform special ranged attack (either hitscan or projectile).
-    protected void performSpecialRangedAttack(LivingEntity target) {
-        if (target == null || !target.isAlive()) return;
-
-        // range gate (reuse your cached hit range)
-        if (this.distanceToSqr(target) > this.currentAttackHitRangeSqr) return;
-
-        // Perform hitscan delivery (similar to regular ranged)
-        if (this.currentAttackRangedDelivery == CatoMobSpeciesInfo.RangedDelivery.HITSCAN) {
-            performHitscanRangedHit(target);
-        }
-        // Perform projectile delivery (just like your existing method)
-        else if (this.currentAttackRangedDelivery == CatoMobSpeciesInfo.RangedDelivery.PROJECTILE) {
-            spawnBasicRangedProjectile(target, this.currentAttackDamage);  // Use the special attack damage
-        }
     }
 
     // ================================================================
@@ -1884,7 +1867,6 @@ public abstract class CatoBaseMob extends Animal {
             final CatoMobSpeciesInfo info = infoServer();
             final long now = this.serverTickNow;
             final BlockPos pos = this.serverTickPos;
-
             tickSleepSpotBlacklistDecayServer();
 
             if (sleepDesireTicks > 0) sleepDesireTicks--;
@@ -1959,7 +1941,18 @@ public abstract class CatoBaseMob extends Animal {
                         // Ranged uses delivery mode (hitscan vs projectile)
                         if (this.currentAttackId == CatoAttackId.RANGED_NORMAL || this.currentAttackId == CatoAttackId.RANGED_SPECIAL) {
                             if (this.currentAttackRangedDelivery == CatoMobSpeciesInfo.RangedDelivery.PROJECTILE) {
-                                spawnBasicRangedProjectile(t, this.currentAttackDamage);
+                                final boolean special = (this.currentAttackId == CatoAttackId.RANGED_SPECIAL);
+
+                                // ✅ NEW: pull projectile tuning from species config
+                                final float velocity = special
+                                        ? info.rangedSpecialProjectileVelocity()
+                                        : info.rangedProjectileVelocity();
+
+                                final float inaccuracy = special
+                                        ? info.rangedSpecialProjectileInaccuracy()
+                                        : info.rangedProjectileInaccuracy();
+
+                                spawnBasicRangedProjectile(t, this.currentAttackDamage, velocity, inaccuracy);
                             } else {
                                 performHitscanRangedHit(t);
                             }

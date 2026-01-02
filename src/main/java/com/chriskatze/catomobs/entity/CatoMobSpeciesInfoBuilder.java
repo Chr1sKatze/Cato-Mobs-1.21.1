@@ -94,7 +94,7 @@ public final class CatoMobSpeciesInfoBuilder {
     private boolean meleeSpecialChancePersistence = false;
 
     // -----------------------------
-    // 3.6) Ranged Combat (NEW)
+    // 3.6) Ranged Combat
     // -----------------------------
     private boolean rangedEnabled = false;
     private double rangedTriggerRange = 12.0D;
@@ -102,6 +102,11 @@ public final class CatoMobSpeciesInfoBuilder {
     private int rangedAnimTotalTicks = 20;
     private int rangedFireDelayTicks = 10;
     private double rangedDamage = 1.0D;
+    private float rangedProjectileVelocity = 1.6F;
+    private float rangedProjectileInaccuracy = 0.0F;
+    private boolean rangedMoveDuringAttackAnimation = false;
+    private int rangedAttackMoveStartDelayTicks = 0;
+    private int rangedAttackMoveStopAfterTicks = 0;
     private CatoMobSpeciesInfo.RangedDelivery rangedDelivery = CatoMobSpeciesInfo.RangedDelivery.HITSCAN;
 
     private boolean rangedSpecialEnabled = false;
@@ -110,15 +115,15 @@ public final class CatoMobSpeciesInfoBuilder {
     private int rangedSpecialAnimTotalTicks = 20;
     private int rangedSpecialFireDelayTicks = 10;
     private double rangedSpecialDamage = 2.0D;
+    private float rangedSpecialProjectileVelocity = 1.6F;
+    private float rangedSpecialProjectileInaccuracy = 0.0F;
+    private boolean rangedSpecialMoveDuringAttackAnimation = false;
+    private int rangedSpecialAttackMoveStartDelayTicks = 0;
+    private int rangedSpecialAttackMoveStopAfterTicks = 0;
     private CatoMobSpeciesInfo.RangedDelivery rangedSpecialDelivery = CatoMobSpeciesInfo.RangedDelivery.HITSCAN;
     private float rangedSpecialUseChance = 0.2f;
     private int rangedSpecialAfterNormalHits = 0;
     private boolean rangedSpecialChancePersistence = false;
-
-
-    private boolean rangedMoveDuringAttackAnimation = false;
-    private int rangedAttackMoveStartDelayTicks = 0;
-    private int rangedAttackMoveStopAfterTicks = 0;
 
     // -----------------------------
     // 4) Wander / movement
@@ -410,6 +415,8 @@ public final class CatoMobSpeciesInfoBuilder {
             int animTotalTicks,
             int fireDelayTicks,
             double damage,
+            float projectileVelocity,
+            float projectileInaccuracy,
             boolean moveDuringAnim,
             int moveStartDelayTicks,
             int moveStopAfterTicks,
@@ -421,16 +428,15 @@ public final class CatoMobSpeciesInfoBuilder {
         this.rangedAnimTotalTicks = animTotalTicks;
         this.rangedFireDelayTicks = fireDelayTicks;
         this.rangedDamage = damage;
-
+        this.rangedProjectileVelocity = Math.max(0.0F, projectileVelocity);
+        this.rangedProjectileInaccuracy = Math.max(0.0F, projectileInaccuracy);
         this.rangedMoveDuringAttackAnimation = moveDuringAnim;
         this.rangedAttackMoveStartDelayTicks = Math.max(0, moveStartDelayTicks);
-
         int stop = moveStopAfterTicks;
         if (stop > 0 && stop < this.rangedAttackMoveStartDelayTicks) {
             stop = this.rangedAttackMoveStartDelayTicks;
         }
         this.rangedAttackMoveStopAfterTicks = stop;
-
         this.rangedDelivery = (delivery == null
                 ? CatoMobSpeciesInfo.RangedDelivery.HITSCAN
                 : delivery);
@@ -438,7 +444,7 @@ public final class CatoMobSpeciesInfoBuilder {
         return this;
     }
 
-    // Fluent setters for the new special ranged attack configuration
+    // Fluent setters for the special ranged attack configuration
     public CatoMobSpeciesInfoBuilder specialRanged(
             boolean enabled,
             double triggerRange,
@@ -446,6 +452,11 @@ public final class CatoMobSpeciesInfoBuilder {
             int animTotalTicks,
             int fireDelayTicks,
             double damage,
+            float projectileVelocity,
+            float projectileInaccuracy,
+            boolean moveDuringAnim,
+            int moveStartDelayTicks,
+            int moveStopAfterTicks,
             CatoMobSpeciesInfo.RangedDelivery delivery,
             float useChance,
             int afterNormalHits,
@@ -457,6 +468,15 @@ public final class CatoMobSpeciesInfoBuilder {
         this.rangedSpecialAnimTotalTicks = animTotalTicks;
         this.rangedSpecialFireDelayTicks = fireDelayTicks;
         this.rangedSpecialDamage = damage;
+        this.rangedSpecialProjectileVelocity = Math.max(0.0F, projectileVelocity);
+        this.rangedSpecialProjectileInaccuracy = Math.max(0.0F, projectileInaccuracy);
+        this.rangedSpecialMoveDuringAttackAnimation = moveDuringAnim;
+        this.rangedSpecialAttackMoveStartDelayTicks = Math.max(0, moveStartDelayTicks);
+        int stop = moveStopAfterTicks;
+        if (stop > 0 && stop < this.rangedSpecialAttackMoveStartDelayTicks) {
+            stop = this.rangedSpecialAttackMoveStartDelayTicks;
+        }
+        this.rangedSpecialAttackMoveStopAfterTicks = stop;
         this.rangedSpecialDelivery = (delivery == null ? CatoMobSpeciesInfo.RangedDelivery.HITSCAN : delivery);
         this.rangedSpecialUseChance = useChance;
         this.rangedSpecialAfterNormalHits = afterNormalHits;
@@ -534,7 +554,7 @@ public final class CatoMobSpeciesInfoBuilder {
     }
 
     // ================================================================
-    // ✅ Surface preference fluent setters (NEW)
+    // Surface preference fluent setters
     // ================================================================
 
     public CatoMobSpeciesInfoBuilder surfacePreference(double water, double solid, double soft, double hard) {
@@ -558,7 +578,7 @@ public final class CatoMobSpeciesInfoBuilder {
     }
 
     // ================================================================
-    // ✅ Fun swim fluent setter (NEW)
+    // Fun swim fluent setter
     // ================================================================
 
     public CatoMobSpeciesInfoBuilder funSwim(
@@ -584,7 +604,7 @@ public final class CatoMobSpeciesInfoBuilder {
     }
 
     // ================================================================
-    // ✅ Rain shelter fluent setters
+    // Rain shelter fluent setters
     // ================================================================
 
     public CatoMobSpeciesInfoBuilder rainShelter(
@@ -611,7 +631,7 @@ public final class CatoMobSpeciesInfoBuilder {
     }
 
     /**
-     * ✅ Peek is now tuned by "avg interval ticks" instead of per-tick probability.
+     * Peek is now tuned by "avg interval ticks" instead of per-tick probability.
      * avgIntervalTicks = 0 disables peeking.
      */
     public CatoMobSpeciesInfoBuilder rainShelterPeek(
@@ -649,7 +669,7 @@ public final class CatoMobSpeciesInfoBuilder {
     }
 
     // ================================================================
-    // Sleep setters (unchanged)
+    // Sleep setters
     // ================================================================
 
     public CatoMobSpeciesInfoBuilder sleepWindow(boolean enabled, boolean atNight, boolean atDay) {
@@ -961,54 +981,27 @@ public final class CatoMobSpeciesInfoBuilder {
         }
 
         // ================================================================
-        // RANGED safety (NEW)
+        // RANGED safety (+ projectile tuning)
         // ================================================================
         boolean rangedEnabledSafe = this.rangedEnabled;
+
         double rangedTrigger = Math.max(0.0D, this.rangedTriggerRange);
         int rangedCooldown = Math.max(0, this.rangedCooldownTicks);
         int rangedAnimTotal = Math.max(1, this.rangedAnimTotalTicks);
         int rangedFireDelay = Math.max(0, this.rangedFireDelayTicks);
         double rangedDmg = Math.max(0.0D, this.rangedDamage);
+
         CatoMobSpeciesInfo.RangedDelivery rangedDeliverySafe =
                 (this.rangedDelivery == null ? CatoMobSpeciesInfo.RangedDelivery.HITSCAN : this.rangedDelivery);
 
+        // projectile tuning (defaults: 1.6f, 0.0f)
+        float rangedProjVel = Math.max(0.1F, this.rangedProjectileVelocity);
+        float rangedProjInacc = Math.max(0.1F, this.rangedProjectileInaccuracy);
+
+        // Clamp delay within anim
         if (rangedFireDelay >= rangedAnimTotal) rangedFireDelay = rangedAnimTotal - 1;
 
-        if (!rangedEnabledSafe) {
-            rangedCooldown = 0;
-            rangedDmg = 0.0D;
-            rangedTrigger = 0.0D;
-            rangedAnimTotal = 1;
-            rangedFireDelay = 0;
-            rangedDeliverySafe = CatoMobSpeciesInfo.RangedDelivery.HITSCAN;
-        }
-
-        boolean rangedSpecialEnabledSafe = this.rangedSpecialEnabled;
-        double rangedSpecialTrigger = Math.max(0.0D, this.rangedSpecialTriggerRange);
-        int rangedSpecialCooldown = Math.max(0, this.rangedSpecialCooldownTicks);
-        int rangedSpecialAnimTotal = Math.max(1, this.rangedSpecialAnimTotalTicks);
-        int rangedSpecialFireDelay = Math.max(0, this.rangedSpecialFireDelayTicks);
-        double rangedSpecialDmg = Math.max(0.0D, this.rangedSpecialDamage);
-        CatoMobSpeciesInfo.RangedDelivery rangedSpecialDeliverySafe =
-                (this.rangedSpecialDelivery == null ? CatoMobSpeciesInfo.RangedDelivery.HITSCAN : this.rangedSpecialDelivery);
-
-        if (rangedSpecialFireDelay >= rangedSpecialAnimTotal) rangedSpecialFireDelay = rangedSpecialAnimTotal - 1;
-
-        if (!rangedSpecialEnabledSafe) {
-            rangedSpecialCooldown = 0;
-            rangedSpecialDmg = 0.0D;
-            rangedSpecialTrigger = 0.0D;
-            rangedSpecialAnimTotal = 1;
-            rangedSpecialFireDelay = 0;
-            rangedSpecialDeliverySafe = CatoMobSpeciesInfo.RangedDelivery.HITSCAN;
-        }
-
-        double switchToRanged = Math.max(0.0D, this.rangedSwitchToDistance);
-        double switchBackToMelee = Math.max(0.0D, this.meleeSwitchBackDistance);
-
-        // ensure proper hysteresis ordering (back distance <= switch distance)
-        if (switchBackToMelee > switchToRanged) switchBackToMelee = switchToRanged;
-
+        // Movement window safety
         boolean rangedMoveDuring = this.rangedMoveDuringAttackAnimation;
 
         int rangedMoveDelay = Math.max(0, this.rangedAttackMoveStartDelayTicks);
@@ -1017,11 +1010,80 @@ public final class CatoMobSpeciesInfoBuilder {
             rangedMoveStopAfter = rangedMoveDelay;
         }
 
-        // If ranged disabled, force off
+        // --------------------------
+        // RANGED SPECIAL safety
+        // --------------------------
+        boolean rangedSpecialEnabledSafe = this.rangedSpecialEnabled;
+
+        double rangedSpecialTrigger = Math.max(0.0D, this.rangedSpecialTriggerRange);
+        int rangedSpecialCooldown = Math.max(0, this.rangedSpecialCooldownTicks);
+        int rangedSpecialAnimTotal = Math.max(1, this.rangedSpecialAnimTotalTicks);
+        int rangedSpecialFireDelay = Math.max(0, this.rangedSpecialFireDelayTicks);
+        double rangedSpecialDmg = Math.max(0.0D, this.rangedSpecialDamage);
+
+        CatoMobSpeciesInfo.RangedDelivery rangedSpecialDeliverySafe =
+                (this.rangedSpecialDelivery == null ? CatoMobSpeciesInfo.RangedDelivery.HITSCAN : this.rangedSpecialDelivery);
+
+        // special projectile tuning (defaults: 1.6f, 0.0f)
+        float rangedSpecialProjVel = Math.max(0.0F, this.rangedSpecialProjectileVelocity);
+        float rangedSpecialProjInacc = Math.max(0.0F, this.rangedSpecialProjectileInaccuracy);
+
+        // Clamp delay within anim
+        if (rangedSpecialFireDelay >= rangedSpecialAnimTotal) rangedSpecialFireDelay = rangedSpecialAnimTotal - 1;
+
+        // Special ranged movement window safety
+        boolean rangedSpecialMoveDuring = this.rangedSpecialMoveDuringAttackAnimation;
+
+        int rangedSpecialMoveDelay = Math.max(0, this.rangedSpecialAttackMoveStartDelayTicks);
+        int rangedSpecialMoveStopAfter = this.rangedSpecialAttackMoveStopAfterTicks;
+        if (rangedSpecialMoveStopAfter > 0 && rangedSpecialMoveStopAfter < rangedSpecialMoveDelay) {
+            rangedSpecialMoveStopAfter = rangedSpecialMoveDelay;
+        }
+
+        // --------------------------
+        // Combat style hysteresis
+        // --------------------------
+        double switchToRanged = Math.max(0.0D, this.rangedSwitchToDistance);
+        double switchBackToMelee = Math.max(0.0D, this.meleeSwitchBackDistance);
+        if (switchBackToMelee > switchToRanged) switchBackToMelee = switchToRanged;
+
+        // ================================================================
+        // Final “force-off” normalization
+        // ================================================================
         if (!rangedEnabledSafe) {
+            rangedCooldown = 0;
+            rangedDmg = 0.0D;
+            rangedTrigger = 0.0D;
+            rangedAnimTotal = 1;
+            rangedFireDelay = 0;
+            rangedDeliverySafe = CatoMobSpeciesInfo.RangedDelivery.HITSCAN;
+
+            // movement disabled
             rangedMoveDuring = false;
             rangedMoveDelay = 0;
             rangedMoveStopAfter = 0;
+
+            // projectile tuning defaults (not used anyway)
+            rangedProjVel = 1.6F;
+            rangedProjInacc = 0.0F;
+        }
+
+        if (!rangedSpecialEnabledSafe) {
+            rangedSpecialCooldown = 0;
+            rangedSpecialDmg = 0.0D;
+            rangedSpecialTrigger = 0.0D;
+            rangedSpecialAnimTotal = 1;
+            rangedSpecialFireDelay = 0;
+            rangedSpecialDeliverySafe = CatoMobSpeciesInfo.RangedDelivery.HITSCAN;
+
+            // special movement disabled (NEW)
+            rangedSpecialMoveDuring = false;
+            rangedSpecialMoveDelay = 0;
+            rangedSpecialMoveStopAfter = 0;
+
+            // projectile tuning defaults (not used anyway)
+            rangedSpecialProjVel = 1.6F;
+            rangedSpecialProjInacc = 0.0F;
         }
 
         return new CatoMobSpeciesInfo(
@@ -1098,6 +1160,8 @@ public final class CatoMobSpeciesInfoBuilder {
                 rangedMoveDuring,
                 rangedMoveDelay,
                 rangedMoveStopAfter,
+                rangedProjectileVelocity,
+                rangedProjectileInaccuracy,
                 rangedDeliverySafe,
 
                 rangedSpecialEnabledSafe,
@@ -1106,6 +1170,11 @@ public final class CatoMobSpeciesInfoBuilder {
                 rangedSpecialAnimTotal,
                 rangedSpecialFireDelay,
                 rangedSpecialDmg,
+                rangedSpecialMoveDuringAttackAnimation,
+                rangedSpecialMoveDelay,
+                rangedSpecialMoveStopAfter,
+                rangedSpecialProjectileVelocity,
+                rangedSpecialProjectileInaccuracy,
                 rangedSpecialDeliverySafe,
                 rangedSpecialUseChance,
                 rangedSpecialAfterNormalHits,

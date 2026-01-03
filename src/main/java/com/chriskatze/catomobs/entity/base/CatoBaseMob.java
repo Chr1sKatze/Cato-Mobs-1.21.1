@@ -16,7 +16,11 @@ import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.*;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.ai.control.FlyingMoveControl;
 import net.minecraft.world.entity.ai.goal.*;
+import net.minecraft.world.entity.ai.navigation.FlyingPathNavigation;
+import net.minecraft.world.entity.ai.navigation.GroundPathNavigation;
+import net.minecraft.world.entity.ai.navigation.PathNavigation;
 import net.minecraft.world.entity.animal.Animal;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.projectile.AbstractArrow;
@@ -1453,7 +1457,14 @@ public abstract class CatoBaseMob extends Animal {
         if (prio.enableLookGoals) {
             this.goalSelector.addGoal(prio.lookAtPlayer,
                     new LookAtPlayerGoal(this, Player.class, 8.0F, 0.1F));
-            this.goalSelector.addGoal(prio.randomLook, new RandomLookAroundGoal(this));
+
+            // ✅ Hovering: head-only idle look (prevents body spinning)
+            if (speciesInfo.movementType() == CatoMobMovementType.HOVERING) {
+                this.goalSelector.addGoal(prio.randomLook, new CatoHoverIdleLookGoal(this));
+            } else {
+                // LAND etc: vanilla look-around is fine
+                this.goalSelector.addGoal(prio.randomLook, new RandomLookAroundGoal(this));
+            }
         }
 
         // Tempt behavior
@@ -1516,7 +1527,25 @@ public abstract class CatoBaseMob extends Animal {
     }
 
     protected void setupFlyingGoals() { this.goalSelector.addGoal(5, new RandomStrollGoal(this, 1.0D)); }
-    protected void setupHoveringGoals() { this.goalSelector.addGoal(5, new RandomStrollGoal(this, 0.7D)); }
+
+    protected void setupHoveringGoals() {
+        CatoMobSpeciesInfo info = getSpeciesInfo();
+        CatoGoalPriorityProfile prio = getGoalPriorities();
+
+        this.goalSelector.addGoal(
+                prio.wander,
+                new CatoWanderGoal(
+                        this,
+                        info.wanderWalkSpeed(),
+                        info.wanderRunSpeed(),
+                        info.wanderRunChance(),
+                        info.wanderMinRadius(),
+                        info.wanderMaxRadius(),
+                        info.wanderRunDistanceThreshold()
+                )
+        );
+    }
+
     protected void setupSurfaceSwimGoals() { this.goalSelector.addGoal(5, new RandomStrollGoal(this, 1.0D)); }
     protected void setupUnderwaterGoals() { this.goalSelector.addGoal(5, new RandomSwimmingGoal(this, 1.0D, 10)); }
 
@@ -1952,6 +1981,8 @@ public abstract class CatoBaseMob extends Animal {
             return;
         }
 
+        applyMovementControllersOnce();
+
         // Check if the target is in Creative or Spectator mode
         if (this.getTarget() instanceof Player p && (p.isCreative() || p.isSpectator())) {
             this.setTarget(null); // Clear the target if it's a Creative/Spectator player
@@ -1985,6 +2016,11 @@ public abstract class CatoBaseMob extends Animal {
                 this.setAggressive(false);
                 tickAiDebugServer();
                 return;
+            }
+
+            // Hovering stabilization (Magnemite-like vertical control; does NOT touch navigation)
+            if (info.movementType() == CatoMobMovementType.HOVERING) {
+                com.chriskatze.catomobs.entity.component.HoverMovementComponent.tick(this, info);
             }
 
             tickExitWaterUrgencyServer();
@@ -2231,6 +2267,7 @@ public abstract class CatoBaseMob extends Animal {
                 .add(Attributes.MAX_HEALTH, info.maxHealth())
                 .add(Attributes.ATTACK_DAMAGE, info.attackDamage())
                 .add(Attributes.MOVEMENT_SPEED, info.movementSpeed())
+                .add(Attributes.FLYING_SPEED, info.flyingSpeed())
                 .add(Attributes.FOLLOW_RANGE, info.followRange())
                 .add(Attributes.GRAVITY, info.gravity());
     }
@@ -2248,5 +2285,38 @@ public abstract class CatoBaseMob extends Animal {
     @Override
     public AgeableMob getBreedOffspring(ServerLevel level, AgeableMob partner) {
         return null;
+    }
+
+    // ================================================================
+    // 23) HOVERING
+    // ================================================================
+    @Override
+    protected PathNavigation createNavigation(Level level) {
+        CatoMobMovementType mt = getSpeciesInfo().movementType();
+
+        if (mt == CatoMobMovementType.HOVERING || mt == CatoMobMovementType.FLYING) {
+            return new FlyingPathNavigation(this, level);
+        }
+
+        return new GroundPathNavigation(this, level);
+    }
+
+    private boolean movementControllerApplied = false;
+
+    private void applyMovementControllersOnce() {
+        if (movementControllerApplied) return;
+        movementControllerApplied = true;
+
+        CatoMobMovementType mt = getSpeciesInfo().movementType();
+
+        if (mt == CatoMobMovementType.HOVERING || mt == CatoMobMovementType.FLYING) {
+            // Flying move control is what makes navigation actually produce motion in air
+            this.moveControl = new FlyingMoveControl(this, 10, true);
+
+            // Hovering should not be fighting vanilla gravity every tick
+            this.setNoGravity(true);
+        } else {
+            this.setNoGravity(false);
+        }
     }
 }

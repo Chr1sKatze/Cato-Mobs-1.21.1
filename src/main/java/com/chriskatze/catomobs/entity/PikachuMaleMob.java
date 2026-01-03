@@ -33,13 +33,15 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
 
     public static final CatoMobSpeciesInfo SPECIES_INFO =
             CatoMobSpeciesInfoBuilder.create()
-                    .identity(CatoMobMovementType.LAND, CatoMobTemperament.NEUTRAL, CatoMobSizeCategory.SMALL)
+                    .identity(CatoMobMovementType.HOVERING, CatoMobTemperament.NEUTRAL, CatoMobSizeCategory.SMALL)
 
                     // GENERAL SETTINGS
-                    .core(16.0D, 0.3D, 48.0D, 0.08D)
+                    .core(16.0D, 0.3D,0.40D, 48.0D, 0.08D)
                     .shadow(0.4f)
                     .home(true, 76.0D)
                     .surfacePreference(-0.5D, 1.5D, 1.0D, 0.0D)
+
+                    .hover(2.8, 0.06, 0.06, 12.0, true, 0.20, 80, 1.00)
 
                     // COMBAT BEHAVIOR
                     .retaliation(true, 20 * 30)

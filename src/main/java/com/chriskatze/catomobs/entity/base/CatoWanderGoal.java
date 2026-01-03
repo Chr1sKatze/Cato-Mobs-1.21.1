@@ -6,7 +6,9 @@ import com.chriskatze.catomobs.registry.CMBlockTags;
 import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.ai.goal.Goal;
+import net.minecraft.world.entity.ai.navigation.FlyingPathNavigation;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.EnumSet;
 
@@ -37,6 +39,17 @@ public class CatoWanderGoal extends Goal {
 
     // Reused mutable to avoid BlockPos allocations in pickPosition/findGround
     private final BlockPos.MutableBlockPos scratch = new BlockPos.MutableBlockPos();
+
+    // ============================================================
+    // ✅ NEW: hover-spin watchdog (only for FlyingPathNavigation)
+    // If nav is "in progress" but we aren't translating, stop it so
+    // FlyingMoveControl doesn't keep yaw-spinning in place.
+    // ============================================================
+    private int stuckTicks = 0;
+    private Vec3 lastPos = Vec3.ZERO;
+    private double lastDistToTargetSqr = Double.NaN;
+    private boolean repathTried = false;
+    private double currentNavSpeed = 0.0D;
 
     public CatoWanderGoal(
             CatoBaseMob mob,
@@ -107,6 +120,15 @@ public class CatoWanderGoal extends Goal {
         mob.onWanderStart(running);
 
         mob.getNavigation().moveTo(this.wantedX, this.wantedY, this.wantedZ, speed);
+
+        // ✅ store for repath retry
+        this.currentNavSpeed = speed;
+        this.repathTried = false;
+
+        // ✅ init watchdog state
+        this.stuckTicks = 0;
+        this.lastPos = mob.position();
+        this.lastDistToTargetSqr = mob.distanceToSqr(this.wantedX, this.wantedY, this.wantedZ);
     }
 
     @Override
@@ -115,6 +137,14 @@ public class CatoWanderGoal extends Goal {
 
         mob.setMoveMode(CatoBaseMob.MOVE_IDLE);
         mob.onWanderStop();
+
+        // ✅ reset watchdog
+        this.stuckTicks = 0;
+        this.lastDistToTargetSqr = Double.NaN;
+
+        // ✅ reset repath state
+        this.repathTried = false;
+        this.currentNavSpeed = 0.0D;
     }
 
     @Override
@@ -124,15 +154,19 @@ public class CatoWanderGoal extends Goal {
 
     @Override
     public void tick() {
-        boolean moving = mob.getNavigation().isInProgress();
+        boolean navActive = mob.getNavigation().isInProgress();
 
-        if (!moving) {
+        if (!navActive) {
             notMovingTicks++;
-            if (notMovingTicks >= 2) {
-                mob.setMoveMode(CatoBaseMob.MOVE_IDLE);
-            }
+            if (notMovingTicks >= 2) mob.setMoveMode(CatoBaseMob.MOVE_IDLE);
+
+            stuckTicks = 0;
+            lastDistToTargetSqr = Double.NaN;
             return;
         }
+
+        // ✅ abort if hover path is stuck/spinning
+        if (tickHoverSpinWatchdog()) return;
 
         notMovingTicks = 0;
         mob.setMoveMode(running ? CatoBaseMob.MOVE_RUN : CatoBaseMob.MOVE_WALK);
@@ -189,16 +223,48 @@ public class CatoWanderGoal extends Goal {
 
             int standY = groundY + 1;
 
+            if (moveType == CatoMobMovementType.HOVERING) {
+                // roam at current height instead of hugging the ground (use real Y, not block-snapped)
+                standY = Mth.floor(mob.getY());
+            }
+
+            // Must be empty where we want to stand...
             scratch.set(x, standY, z);
             if (!level.isEmptyBlock(scratch)) continue;
 
+            // ...and at least one block of headroom (cheap safety; avoids picking "feet empty, head stuck")
+            scratch.set(x, standY + 1, z);
+            if (!level.isEmptyBlock(scratch)) continue;
+
+            // HOVERING: ensure the mob's FULL hitbox actually fits there (prevents wall-hug spin)
+            if (moveType == CatoMobMovementType.HOVERING) {
+                // Build the mob's bounding box as if it stood at the target center
+                double tx = x + 0.5D;
+                double ty = standY;
+                double tz = z + 0.5D;
+
+                var targetBox = mob.getBoundingBox().move(
+                        tx - mob.getX(),
+                        ty - mob.getY(),
+                        tz - mob.getZ()
+                );
+
+                // If we'd collide with blocks at the target, skip it
+                if (!level.noCollision(mob, targetBox)) continue;
+
+                // Simple wall-clearance heuristic:
+                // avoid picking positions immediately next to a solid collision (common cause of spinning)
+                if (!hasHorizontalClearance(level, x, standY, z, scratch)) continue;
+            }
+
             if (moveType == CatoMobMovementType.LAND) {
+                // keep original behavior: don't pick air above fluids
+                scratch.set(x, standY, z);
                 if (!level.getFluidState(scratch).isEmpty()) continue;
             }
 
             double prefScore = 0.0D;
             if (pref != null) {
-                // Note: with empty-block requirement, this is typically "solid" anyway
                 boolean inWater = !level.getFluidState(scratch).isEmpty();
                 prefScore += inWater ? pref.preferWaterSurfaceWeight() : pref.preferSolidSurfaceWeight();
 
@@ -273,5 +339,82 @@ public class CatoWanderGoal extends Goal {
         if (v < 0f) return 0f;
         if (v > 1f) return 1f;
         return v;
+    }
+
+    private boolean tickHoverSpinWatchdog() {
+        if (!(mob.getNavigation() instanceof FlyingPathNavigation)) return false;
+
+        final Vec3 curPos = mob.position();
+
+        final double dx = curPos.x - lastPos.x;
+        final double dz = curPos.z - lastPos.z;
+        final double movedHorizSqr = dx * dx + dz * dz;
+
+        final double distSqr = mob.distanceToSqr(this.wantedX, this.wantedY, this.wantedZ);
+
+        final boolean barelyMoved = movedHorizSqr < 0.0004D; // ~0.02 blocks
+        final boolean notGettingCloser =
+                !Double.isNaN(lastDistToTargetSqr) && distSqr >= (lastDistToTargetSqr - 0.002D);
+
+        if (barelyMoved && notGettingCloser) stuckTicks++;
+        else stuckTicks = 0;
+
+        lastPos = curPos;
+        lastDistToTargetSqr = distSqr;
+
+        // ------------------------------------------------------------
+        // ✅ One quick repath attempt before we give up.
+        // Trigger once after ~0.4s of no progress.
+        // ------------------------------------------------------------
+        if (stuckTicks == 8 && !repathTried) {
+            repathTried = true;
+
+            // Re-issue the moveTo (often fixes edge cases near walls/path corners)
+            double spd = (currentNavSpeed > 0.0D) ? currentNavSpeed : walkSpeed;
+            mob.getNavigation().moveTo(this.wantedX, this.wantedY, this.wantedZ, spd);
+
+            // Give the repath a fair chance: reset progress tracking
+            stuckTicks = 0;
+            lastPos = mob.position();
+            lastDistToTargetSqr = mob.distanceToSqr(this.wantedX, this.wantedY, this.wantedZ);
+            return false; // keep going
+        }
+
+        // ------------------------------------------------------------
+        // Hard abort if still stuck (after repath attempt had time)
+        // ------------------------------------------------------------
+        if (stuckTicks >= 12) {
+            mob.getNavigation().stop();
+            mob.setMoveMode(CatoBaseMob.MOVE_IDLE);
+            mob.onWanderStop();
+
+            nextWanderAttemptTick = mob.nowServer() + 40; // 2s cooldown
+            stuckTicks = 0;
+            notMovingTicks = 2;
+            return true; // we handled + aborted
+        }
+
+        return false;
+    }
+
+    private static boolean hasHorizontalClearance(Level level, int x, int y, int z, BlockPos.MutableBlockPos scratch) {
+        // Check the four neighbors at body + head level.
+        // If any neighbor has a collision shape, we're hugging a wall -> skip.
+        int[][] dirs = { {1,0}, {-1,0}, {0,1}, {0,-1} };
+
+        for (int[] d : dirs) {
+            int nx = x + d[0];
+            int nz = z + d[1];
+
+            // body level
+            scratch.set(nx, y, nz);
+            if (!level.getBlockState(scratch).getCollisionShape(level, scratch).isEmpty()) return false;
+
+            // head level
+            scratch.set(nx, y + 1, nz);
+            if (!level.getBlockState(scratch).getCollisionShape(level, scratch).isEmpty()) return false;
+        }
+
+        return true;
     }
 }

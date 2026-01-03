@@ -24,7 +24,8 @@ public final class CatoMobSpeciesInfoBuilder {
     // 2) Core attributes
     // -----------------------------
     private double maxHealth = 10.0D;
-    private double movementSpeed = 0.25D;
+    private double movementSpeed = 0.30D;
+    private double flyingSpeed = 0.30D;
     private double followRange = 16.0D;
     private double gravity = 0.08D;
 
@@ -142,6 +143,18 @@ public final class CatoMobSpeciesInfoBuilder {
     private boolean stayWithinHomeRadius = false;
     private double homeRadius = 64.0D;
     private double wanderRunDistanceThreshold = -1.0D;
+
+    // -----------------------------
+    // 4.5) HOVER (Magnemite-like) (NEW)
+    // -----------------------------
+    private double hoverDesiredHeight = 0.70D;
+    private double hoverMaxUpStepPerTick = 0.08D;
+    private double hoverMaxDownStepPerTick = 0.10D;
+    private double hoverFloorTraceMax = 6.0D;
+    private boolean hoverBobbingEnabled = true;
+    private double hoverBobAmplitude = 0.08D;
+    private int hoverBobPeriodTicks = 40;
+    private double hoverBobBlend = 1.0D;
 
     // -----------------------------
     // 5.2) Surface preference (NEW)
@@ -331,13 +344,40 @@ public final class CatoMobSpeciesInfoBuilder {
     public CatoMobSpeciesInfoBuilder core(
             double maxHealth,
             double movementSpeed,
+            double flyingSpeed,
             double followRange,
             double gravity
     ) {
         this.maxHealth = maxHealth;
         this.movementSpeed = movementSpeed;
+        this.flyingSpeed = flyingSpeed;
         this.followRange = followRange;
         this.gravity = gravity;
+        return this;
+    }
+
+    // -----------------------------
+    // HOVER fluent setter (NEW)
+    // -----------------------------
+    public CatoMobSpeciesInfoBuilder hover(
+            double desiredHeight,
+            double maxUpStepPerTick,
+            double maxDownStepPerTick,
+            double floorTraceMax,
+            boolean bobbingEnabled,
+            double bobAmplitude,
+            int bobPeriodTicks,
+            double bobBlend
+    ) {
+        this.hoverDesiredHeight = desiredHeight;
+        this.hoverMaxUpStepPerTick = maxUpStepPerTick;
+        this.hoverMaxDownStepPerTick = maxDownStepPerTick;
+        this.hoverFloorTraceMax = floorTraceMax;
+
+        this.hoverBobbingEnabled = bobbingEnabled;
+        this.hoverBobAmplitude = bobAmplitude;
+        this.hoverBobPeriodTicks = bobPeriodTicks;
+        this.hoverBobBlend = bobBlend;
         return this;
     }
 
@@ -365,7 +405,6 @@ public final class CatoMobSpeciesInfoBuilder {
 
         return this;
     }
-
 
     public CatoMobSpeciesInfoBuilder specialMelee(
             boolean enabled,
@@ -782,6 +821,31 @@ public final class CatoMobSpeciesInfoBuilder {
                 );
 
         // ================================================================
+        // Hover safety (NEW)
+        // ================================================================
+        double hoverHeight = Math.max(0.0D, this.hoverDesiredHeight);
+        double hoverUp = Math.max(0.0D, this.hoverMaxUpStepPerTick);
+        double hoverDown = Math.max(0.0D, this.hoverMaxDownStepPerTick);
+        double hoverTrace = Math.max(0.0D, this.hoverFloorTraceMax);
+
+        boolean hoverBobEnabled = this.hoverBobbingEnabled;
+        double hoverBobAmp = Math.max(0.0D, this.hoverBobAmplitude);
+        int hoverBobPeriod = Math.max(0, this.hoverBobPeriodTicks);
+        double hoverBobBlend = Math.max(0.0D, Math.min(1.0D, this.hoverBobBlend));
+
+        // If not a hovering mob: force to “off/defaults” so nothing accidentally uses it
+        if (this.movementType != CatoMobMovementType.HOVERING) {
+            hoverHeight = 0.0D;
+            hoverUp = 0.0D;
+            hoverDown = 0.0D;
+            hoverTrace = 0.0D;
+            hoverBobEnabled = false;
+            hoverBobAmp = 0.0D;
+            hoverBobPeriod = 0;
+            hoverBobBlend = 0.0D;
+        }
+
+        // ================================================================
         // Fun swim safety
         // ================================================================
         boolean funEnabled = this.funSwimEnabled;
@@ -953,7 +1017,7 @@ public final class CatoMobSpeciesInfoBuilder {
 
         // projectile tuning (defaults: 1.6f, 0.0f)
         float rangedProjVel = Math.max(0.1F, this.rangedProjectileVelocity);
-        float rangedProjInacc = Math.max(0.1F, this.rangedProjectileInaccuracy);
+        float rangedProjInacc = Math.max(0.0F, this.rangedProjectileInaccuracy);
 
         // Clamp delay within anim
         if (rangedFireDelay >= rangedAnimTotal) rangedFireDelay = rangedAnimTotal - 1;
@@ -982,7 +1046,7 @@ public final class CatoMobSpeciesInfoBuilder {
                 (this.rangedSpecialDelivery == null ? CatoMobSpeciesInfo.RangedDelivery.HITSCAN : this.rangedSpecialDelivery);
 
         // special projectile tuning (defaults: 1.6f, 0.0f)
-        float rangedSpecialProjVel = Math.max(0.0F, this.rangedSpecialProjectileVelocity);
+        float rangedSpecialProjVel = Math.max(0.1F, this.rangedSpecialProjectileVelocity);
         float rangedSpecialProjInacc = Math.max(0.0F, this.rangedSpecialProjectileInaccuracy);
 
         // Clamp delay within anim
@@ -1033,7 +1097,7 @@ public final class CatoMobSpeciesInfoBuilder {
             rangedSpecialFireDelay = 0;
             rangedSpecialDeliverySafe = CatoMobSpeciesInfo.RangedDelivery.HITSCAN;
 
-            // special movement disabled (NEW)
+            // special movement disabled
             rangedSpecialMoveDuring = false;
             rangedSpecialMoveDelay = 0;
             rangedSpecialMoveStopAfter = 0;
@@ -1053,6 +1117,7 @@ public final class CatoMobSpeciesInfoBuilder {
                 // 2) Core
                 Math.max(1.0D, maxHealth),
                 Math.max(0.0D, movementSpeed),
+                Math.max(0.0D, flyingSpeed),
                 Math.max(0.0D, followRange),
                 gravity,
 
@@ -1117,25 +1182,26 @@ public final class CatoMobSpeciesInfoBuilder {
                 rangedMoveDuring,
                 rangedMoveDelay,
                 rangedMoveStopAfter,
-                rangedProjectileVelocity,
-                rangedProjectileInaccuracy,
+                rangedProjVel,          // ✅ use safe value
+                rangedProjInacc,        // ✅ use safe value
                 rangedDeliverySafe,
 
+                // RANGED SPECIAL
                 rangedSpecialEnabledSafe,
                 rangedSpecialTrigger,
                 rangedSpecialCooldown,
                 rangedSpecialAnimTotal,
                 rangedSpecialFireDelay,
                 rangedSpecialDmg,
-                rangedSpecialMoveDuringAttackAnimation,
+                rangedSpecialMoveDuring,
                 rangedSpecialMoveDelay,
                 rangedSpecialMoveStopAfter,
-                rangedSpecialProjectileVelocity,
-                rangedSpecialProjectileInaccuracy,
+                rangedSpecialProjVel,   // ✅ use safe value
+                rangedSpecialProjInacc, // ✅ use safe value
                 rangedSpecialDeliverySafe,
-                rangedSpecialUseChance,
-                rangedSpecialAfterNormalHits,
-                rangedSpecialChancePersistence,
+                clamp01(this.rangedSpecialUseChance),
+                Math.max(0, this.rangedSpecialAfterNormalHits),
+                this.rangedSpecialChancePersistence,
 
                 // 4) Wander
                 Math.max(0.0D, wanderWalkSpeed),
@@ -1151,6 +1217,16 @@ public final class CatoMobSpeciesInfoBuilder {
                 stayWithinHomeRadius,
                 Math.max(0.0D, homeRadius),
                 wanderRunDistanceThreshold,
+
+                // 4.5) Hover (NEW)
+                hoverHeight,
+                hoverUp,
+                hoverDown,
+                hoverTrace,
+                hoverBobEnabled,
+                hoverBobAmp,
+                hoverBobPeriod,
+                hoverBobBlend,
 
                 // 5.2) Surface preference
                 surfacePreferenceSafe,

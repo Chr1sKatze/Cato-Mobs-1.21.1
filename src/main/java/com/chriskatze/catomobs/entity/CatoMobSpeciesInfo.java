@@ -27,6 +27,7 @@ public record CatoMobSpeciesInfo(
         // ================================================================
         double maxHealth,
         double movementSpeed,
+        double flyingSpeed,
         double followRange,
         double gravity,
 
@@ -143,6 +144,18 @@ public record CatoMobSpeciesInfo(
         double homeRadius,
 
         double wanderRunDistanceThreshold,
+
+        // ================================================================
+        // 4.5) HOVER (Magnemite-like)
+        // ================================================================
+        double hoverDesiredHeight,
+        double hoverMaxUpStepPerTick,
+        double hoverMaxDownStepPerTick,
+        double hoverFloorTraceMax,
+        boolean hoverBobbingEnabled,
+        double hoverBobAmplitude,
+        int hoverBobPeriodTicks,
+        double hoverBobBlend,
 
         // ================================================================
         // 5.0) SURFACE PREFERENCE (water vs solid + soft vs hard ground)

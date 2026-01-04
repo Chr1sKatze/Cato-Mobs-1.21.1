@@ -41,7 +41,8 @@ public class PikachuMaleMob extends CatoBaseMob implements GeoEntity {
                     .home(true, 76.0D)
                     .surfacePreference(-0.5D, 1.5D, 1.0D, 0.0D)
 
-                    .hover(2.8, 0.06, 0.06, 12.0, true, 0.20, 80, 1.00)
+                    .hover(2.8, 0.06, 0.06, 16.0, true, 0.20, 80, 1.00)
+                    .hoverVariance(true,12.0,1.8,100,300,100,0.75f)
 
                     // COMBAT BEHAVIOR
                     .retaliation(true, 20 * 30)

@@ -158,6 +158,18 @@ public record CatoMobSpeciesInfo(
         double hoverBobBlend,
 
         // ================================================================
+        // 4.6) HOVER (variance)
+        // ================================================================
+        // Hover variance (mood)
+        boolean hoverHeightVarianceEnabled,
+        double hoverExtraHeightUpMax,
+        double hoverExtraHeightDownMax,
+        int hoverExtraHeightHoldMinTicks,
+        int hoverExtraHeightHoldMaxTicks,
+        int hoverExtraHeightRerollIntervalTicks,
+        float hoverExtraHeightChancePerReroll,
+
+        // ================================================================
         // 5.0) SURFACE PREFERENCE (water vs solid + soft vs hard ground)
         // ================================================================
         SurfacePreferenceConfig surfacePreference,

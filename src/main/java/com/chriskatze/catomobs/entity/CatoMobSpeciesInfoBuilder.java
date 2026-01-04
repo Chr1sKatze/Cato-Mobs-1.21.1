@@ -157,6 +157,17 @@ public final class CatoMobSpeciesInfoBuilder {
     private double hoverBobBlend = 1.0D;
 
     // -----------------------------
+    // 4.6) HOVER (variance)
+    // -----------------------------
+    private boolean hoverHeightVarianceEnabled = false;
+    private double hoverExtraHeightUpMax = 0.0D;
+    private double hoverExtraHeightDownMax = 0.0D;
+    private int hoverExtraHeightHoldMinTicks = 60;
+    private int hoverExtraHeightHoldMaxTicks = 200;
+    private int hoverExtraHeightRerollIntervalTicks = 100;
+    private float hoverExtraHeightChancePerReroll = 0.35f;
+
+    // -----------------------------
     // 5.2) Surface preference (NEW)
     // -----------------------------
     private CatoMobSpeciesInfo.SurfacePreferenceConfig surfacePreference =
@@ -357,7 +368,7 @@ public final class CatoMobSpeciesInfoBuilder {
     }
 
     // -----------------------------
-    // HOVER fluent setter (NEW)
+    // HOVER fluent setter
     // -----------------------------
     public CatoMobSpeciesInfoBuilder hover(
             double desiredHeight,
@@ -378,6 +389,25 @@ public final class CatoMobSpeciesInfoBuilder {
         this.hoverBobAmplitude = bobAmplitude;
         this.hoverBobPeriodTicks = bobPeriodTicks;
         this.hoverBobBlend = bobBlend;
+        return this;
+    }
+
+    public CatoMobSpeciesInfoBuilder hoverVariance(
+            boolean enabled,
+            double extraUpMax,
+            double extraDownMax,
+            int holdMinTicks,
+            int holdMaxTicks,
+            int rerollIntervalTicks,
+            float chancePerReroll
+    ) {
+        this.hoverHeightVarianceEnabled = enabled;
+        this.hoverExtraHeightUpMax = extraUpMax;
+        this.hoverExtraHeightDownMax = extraDownMax;
+        this.hoverExtraHeightHoldMinTicks = holdMinTicks;
+        this.hoverExtraHeightHoldMaxTicks = holdMaxTicks;
+        this.hoverExtraHeightRerollIntervalTicks = rerollIntervalTicks;
+        this.hoverExtraHeightChancePerReroll = chancePerReroll;
         return this;
     }
 
@@ -846,6 +876,30 @@ public final class CatoMobSpeciesInfoBuilder {
         }
 
         // ================================================================
+        // Hover variance safety (NEW)
+        // ================================================================
+        boolean hoverVarEnabled = this.hoverHeightVarianceEnabled;
+        double hoverVarUpMax = Math.max(0.0D, this.hoverExtraHeightUpMax);
+        double hoverVarDownMax = Math.max(0.0D, this.hoverExtraHeightDownMax);
+
+        int hoverVarHoldMin = Math.max(1, this.hoverExtraHeightHoldMinTicks);
+        int hoverVarHoldMax = Math.max(hoverVarHoldMin, this.hoverExtraHeightHoldMaxTicks);
+
+        int hoverVarInterval = Math.max(1, this.hoverExtraHeightRerollIntervalTicks);
+        float hoverVarChance = clamp01(this.hoverExtraHeightChancePerReroll);
+
+        // If not hovering OR disabled => hard force off
+        if (this.movementType != CatoMobMovementType.HOVERING || !hoverVarEnabled) {
+            hoverVarEnabled = false;
+            hoverVarUpMax = 0.0D;
+            hoverVarDownMax = 0.0D;
+            hoverVarHoldMin = 1;
+            hoverVarHoldMax = 1;
+            hoverVarInterval = 1;
+            hoverVarChance = 0.0f;
+        }
+
+        // ================================================================
         // Fun swim safety
         // ================================================================
         boolean funEnabled = this.funSwimEnabled;
@@ -1227,6 +1281,15 @@ public final class CatoMobSpeciesInfoBuilder {
                 hoverBobAmp,
                 hoverBobPeriod,
                 hoverBobBlend,
+
+                // 4.6) Hover variance (NEW)
+                hoverVarEnabled,
+                hoverVarUpMax,
+                hoverVarDownMax,
+                hoverVarHoldMin,
+                hoverVarHoldMax,
+                hoverVarInterval,
+                hoverVarChance,
 
                 // 5.2) Surface preference
                 surfacePreferenceSafe,
